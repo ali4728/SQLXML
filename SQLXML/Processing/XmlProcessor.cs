@@ -36,7 +36,10 @@ public class XmlProcessor
             throw new InvalidOperationException("XML document has no root element.");
 
         // Create root message row (no data columns)
-        var messageRow = new RowData { TableName = "ADT_A01_26_GLO_DEF" };
+        //var messageRow = new RowData { TableName = "ADT_A01_26_GLO_DEF" };
+
+        var rootTable = _tables.First(t => t.ParentTableName == null && t.ForeignKeys.Count == 0);
+        var messageRow = new RowData { TableName = rootTable.TableName };
 
         // Get all direct children of the root element
         var xmlChildren = root.Elements().ToList();
