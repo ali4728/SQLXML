@@ -18,9 +18,10 @@ public class XsdParser
     private readonly Dictionary<XDocument, Dictionary<string, string>> _prefixMaps = new();
 
     private readonly List<TableDefinition> _tables = new();
+    private readonly MessageStructure _messageStructure = new();
     private int _sortOrder;
 
-    public List<TableDefinition> Parse(string rootXsdPath)
+    public (List<TableDefinition> Tables, MessageStructure Structure) Parse(string rootXsdPath)
     {
         LoadXsdChain(rootXsdPath);
         BuildTypeDictionary();
@@ -35,6 +36,7 @@ public class XsdParser
 
         var messageName = "ADT_A01_26_GLO_DEF";
         var messageTable = CreateTable(messageName);
+        messageTable.XmlElementName = messageName;
 
         var sequence = rootElement.Element(Xs + "complexType")?.Element(Xs + "sequence");
         if (sequence == null)
@@ -42,7 +44,7 @@ public class XsdParser
 
         WalkMessageSequence(sequence, messageTable);
 
-        return _tables;
+        return (_tables, _messageStructure);
     }
 
     private void LoadXsdChain(string rootPath)
@@ -125,13 +127,14 @@ public class XsdParser
         // Collect all names used across root + groups to detect collisions
         var allUsedNames = new HashSet<string>(rootSegNames.Keys);
 
-        // Second pass: create tables
+        // Second pass: create tables and build message structure
         var segNameIndex = new Dictionary<string, int>();
 
         foreach (var child in sequence.Elements())
         {
             if (child.Name == Xs + "element")
             {
+                var fullName = child.Attribute("name")?.Value ?? "Unknown";
                 var segName = GetSegmentShortName(child);
                 segNameIndex.TryGetValue(segName, out int idx);
                 segNameIndex[segName] = idx + 1;
@@ -144,32 +147,55 @@ public class XsdParser
 
                 var isRepeating = IsRepeating(child);
                 var segTable = CreateSegmentTable(tableName, messageTable.TableName, isRepeating);
+                segTable.XmlElementName = fullName;
                 ProcessSegmentFields(child, segTable);
+
+                // Add to message structure
+                _messageStructure.Slots.Add(new MessageSlot
+                {
+                    XmlElementName = fullName,
+                    TableName = tableName,
+                    IsRepeating = isRepeating
+                });
             }
             else if (child.Name == Xs + "sequence")
             {
-                ProcessGroup(child, messageTable.TableName, allUsedNames);
+                var groupSlot = ProcessGroup(child, messageTable.TableName, allUsedNames);
+                if (groupSlot != null)
+                    _messageStructure.Slots.Add(groupSlot);
             }
         }
     }
 
-    private void ProcessGroup(XElement groupSequence, string messageTableName, HashSet<string> allUsedNames)
+    private MessageSlot? ProcessGroup(XElement groupSequence, string messageTableName, HashSet<string> allUsedNames)
     {
         var elements = groupSequence.Elements(Xs + "element").ToList();
-        if (elements.Count == 0) return;
+        if (elements.Count == 0) return null;
 
         // Lead segment gets MessageId FK
         var leadElement = elements[0];
+        var leadFullName = leadElement.Attribute("name")?.Value ?? "Unknown";
         var leadSegName = GetSegmentShortName(leadElement);
         var leadIsRepeating = true; // Groups themselves are unbounded
 
         var leadTable = CreateSegmentTable(leadSegName, messageTableName, leadIsRepeating);
+        leadTable.XmlElementName = leadFullName;
         ProcessSegmentFields(leadElement, leadTable);
+
+        var groupSlot = new MessageSlot
+        {
+            XmlElementName = leadFullName,
+            TableName = leadSegName,
+            IsRepeating = true,
+            IsGroup = true,
+            GroupChildren = new List<MessageSlot>()
+        };
 
         // Child segments in the group get both MessageId and LeadSegmentId FKs
         for (int i = 1; i < elements.Count; i++)
         {
             var childElement = elements[i];
+            var childFullName = childElement.Attribute("name")?.Value ?? "Unknown";
             var childSegName = GetSegmentShortName(childElement);
             var childIsRepeating = IsRepeating(childElement);
 
@@ -179,8 +205,18 @@ public class XsdParser
                 : childSegName;
 
             var childTable = CreateGroupChildTable(childTableName, messageTableName, leadTable.TableName, childIsRepeating);
+            childTable.XmlElementName = childFullName;
             ProcessSegmentFields(childElement, childTable);
+
+            groupSlot.GroupChildren.Add(new MessageSlot
+            {
+                XmlElementName = childFullName,
+                TableName = childTableName,
+                IsRepeating = childIsRepeating
+            });
         }
+
+        return groupSlot;
     }
 
     private void ProcessSegmentFields(XElement segElement, TableDefinition segTable)
@@ -207,13 +243,16 @@ public class XsdParser
                 // Create a child table for this repeating field
                 var childTableName = fieldName;
                 var childTable = CreateChildFieldTable(childTableName, segTable.TableName);
+                childTable.ParentTableName = segTable.TableName;
+                childTable.ParentXmlFieldName = fieldName;
 
                 if (fieldTypeAttr != null)
                 {
                     var fieldType = ResolveTypeRef(fieldTypeAttr, field);
                     if (fieldType != null && IsComplexType(fieldType))
                     {
-                        FlattenComplexType(fieldType, field, childTable, fieldName);
+                        // For child field tables, XmlPath is relative to the repeating element
+                        FlattenComplexType(fieldType, field, childTable, fieldName, new List<string>());
                     }
                     else
                     {
@@ -223,7 +262,8 @@ public class XsdParser
                         {
                             ColumnName = fieldName,
                             SqlType = sqlType,
-                            IsNullable = true
+                            IsNullable = true,
+                            XmlPath = new List<string> { fieldName }
                         });
                     }
                 }
@@ -237,7 +277,7 @@ public class XsdParser
                     if (fieldType != null && IsComplexType(fieldType))
                     {
                         // Flatten complex type into parent table
-                        FlattenComplexType(fieldType, field, segTable, fieldName);
+                        FlattenComplexType(fieldType, field, segTable, fieldName, new List<string> { fieldName });
                     }
                     else
                     {
@@ -247,7 +287,8 @@ public class XsdParser
                         {
                             ColumnName = fieldName,
                             SqlType = sqlType,
-                            IsNullable = true
+                            IsNullable = true,
+                            XmlPath = new List<string> { fieldName }
                         });
                     }
                 }
@@ -257,7 +298,7 @@ public class XsdParser
                     var inlineCt = field.Element(Xs + "complexType");
                     if (inlineCt != null)
                     {
-                        FlattenComplexType(inlineCt, field, segTable, fieldName);
+                        FlattenComplexType(inlineCt, field, segTable, fieldName, new List<string> { fieldName });
                     }
                     else
                     {
@@ -265,7 +306,8 @@ public class XsdParser
                         {
                             ColumnName = fieldName,
                             SqlType = "NVARCHAR(MAX)",
-                            IsNullable = true
+                            IsNullable = true,
+                            XmlPath = new List<string> { fieldName }
                         });
                     }
                 }
@@ -273,7 +315,7 @@ public class XsdParser
         }
     }
 
-    private void FlattenComplexType(XElement complexType, XElement contextElement, TableDefinition table, string prefix)
+    private void FlattenComplexType(XElement complexType, XElement contextElement, TableDefinition table, string prefix, List<string> xmlPath)
     {
         var seq = complexType.Element(Xs + "sequence");
         if (seq == null) return;
@@ -285,6 +327,7 @@ public class XsdParser
 
             var colName = $"{prefix}_{elName}";
             var elTypeAttr = el.Attribute("type")?.Value;
+            var childXmlPath = new List<string>(xmlPath) { elName };
 
             if (elTypeAttr != null)
             {
@@ -292,7 +335,7 @@ public class XsdParser
                 if (elType != null && IsComplexType(elType))
                 {
                     // Recurse to flatten nested complex type
-                    FlattenComplexType(elType, el, table, colName);
+                    FlattenComplexType(elType, el, table, colName, childXmlPath);
                 }
                 else
                 {
@@ -301,7 +344,8 @@ public class XsdParser
                     {
                         ColumnName = colName,
                         SqlType = sqlType,
-                        IsNullable = true
+                        IsNullable = true,
+                        XmlPath = childXmlPath
                     });
                 }
             }
@@ -311,7 +355,7 @@ public class XsdParser
                 var inlineCt = el.Element(Xs + "complexType");
                 if (inlineCt != null)
                 {
-                    FlattenComplexType(inlineCt, el, table, colName);
+                    FlattenComplexType(inlineCt, el, table, colName, childXmlPath);
                 }
                 else
                 {
@@ -319,7 +363,8 @@ public class XsdParser
                     {
                         ColumnName = colName,
                         SqlType = "NVARCHAR(MAX)",
-                        IsNullable = true
+                        IsNullable = true,
+                        XmlPath = childXmlPath
                     });
                 }
             }

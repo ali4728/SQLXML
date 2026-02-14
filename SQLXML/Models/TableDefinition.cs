@@ -6,6 +6,9 @@ public class TableDefinition
     public List<ColumnDefinition> Columns { get; } = new();
     public List<ForeignKeyDefinition> ForeignKeys { get; } = new();
     public int SortOrder { get; set; }
+    public string XmlElementName { get; set; } = string.Empty;
+    public string? ParentTableName { get; set; }
+    public string? ParentXmlFieldName { get; set; }
 }
 
 public class ColumnDefinition
@@ -15,6 +18,7 @@ public class ColumnDefinition
     public bool IsNullable { get; set; } = true;
     public bool IsIdentity { get; set; }
     public bool IsPrimaryKey { get; set; }
+    public List<string> XmlPath { get; set; } = new();
 }
 
 public class ForeignKeyDefinition

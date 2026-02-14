@@ -5,7 +5,8 @@
       "Bash(dotnet build:*)",
       "Bash(echo:*)",
       "Bash(dir:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(dotnet restore:*)"
     ]
   }
 }
