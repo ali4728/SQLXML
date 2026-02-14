@@ -1,0 +1,77 @@
+## .NET ##
+bin/
+obj/
+publish/
+
+## User-specific files ##
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## VS Code ##
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+## Visual Studio ##
+.vs/
+*.rsuser
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Ll]og/
+[Ll]ogs/
+
+## Build results ##
+[Dd]ebug/
+[Rr]elease/
+[Oo]ut/
+build/
+**/Properties/launchSettings.json
+
+## NuGet ##
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+
+## Rider ##
+.idea/
+*.sln.iml
+
+## JetBrains ##
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+## Windows ##
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+nul
+
+## macOS ##
+.DS_Store
+.AppleDouble
+.LSOverride
+
+## Misc ##
+*.log
+*.tmp
+*.temp
+*.swp
+*~
+
+SampleFiles/
