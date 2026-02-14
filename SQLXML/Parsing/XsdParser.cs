@@ -8,6 +8,8 @@ public class XsdParser
 {
     private static readonly XNamespace Xs = "http://www.w3.org/2001/XMLSchema";
 
+    private const int MaxColumnsPerTable = 300;
+
     // All loaded XSD documents keyed by their target namespace
     private readonly Dictionary<string, XDocument> _docs = new();
 
@@ -26,25 +28,353 @@ public class XsdParser
         LoadXsdChain(rootXsdPath);
         BuildTypeDictionary();
 
+        // Dynamic root element discovery: find the first top-level xs:element
         var rootDoc = _docs.Values.First();
         var rootElement = rootDoc.Descendants(Xs + "element")
-            .FirstOrDefault(e => e.Parent?.Name == Xs + "schema"
-                && e.Attribute("name")?.Value == "ADT_A01_26_GLO_DEF");
+            .FirstOrDefault(e => e.Parent?.Name == Xs + "schema");
 
         if (rootElement == null)
-            throw new InvalidOperationException("Root element ADT_A01_26_GLO_DEF not found in XSD.");
+            throw new InvalidOperationException("No top-level xs:element found in XSD.");
 
-        var messageName = "ADT_A01_26_GLO_DEF";
-        var messageTable = CreateTable(messageName);
-        messageTable.XmlElementName = messageName;
+        var rootName = rootElement.Attribute("name")?.Value
+            ?? throw new InvalidOperationException("Root element has no name attribute.");
 
-        var sequence = rootElement.Element(Xs + "complexType")?.Element(Xs + "sequence");
-        if (sequence == null)
-            throw new InvalidOperationException("Root element has no xs:sequence.");
+        var rootTable = CreateTable(rootName);
+        rootTable.XmlElementName = rootName;
 
-        WalkMessageSequence(sequence, messageTable);
+        // Get the complex type (inline or referenced) and process its children
+        var complexType = GetComplexType(rootElement);
+        if (complexType != null)
+        {
+            ProcessComplexTypeChildren(complexType, rootElement, rootTable);
+        }
+
+        // Handle column overflow on all tables
+        HandleColumnOverflow();
 
         return (_tables, _messageStructure);
+    }
+
+    private XElement? GetComplexType(XElement element)
+    {
+        // Check for inline complexType first
+        var inline = element.Element(Xs + "complexType");
+        if (inline != null) return inline;
+
+        // Check for referenced type via type= attribute
+        var typeAttr = element.Attribute("type")?.Value;
+        if (typeAttr != null)
+        {
+            var resolved = ResolveTypeRef(typeAttr, element);
+            if (resolved != null && IsComplexType(resolved))
+                return resolved;
+        }
+
+        return null;
+    }
+
+    private void ProcessComplexTypeChildren(XElement complexType, XElement contextElement, TableDefinition currentTable)
+    {
+        // Handle xs:sequence
+        var sequence = complexType.Element(Xs + "sequence");
+        if (sequence != null)
+        {
+            ProcessSequenceChildren(sequence, contextElement, currentTable);
+        }
+
+        // Handle xs:attribute elements
+        foreach (var attr in complexType.Elements(Xs + "attribute"))
+        {
+            var attrName = attr.Attribute("name")?.Value;
+            if (attrName == null) continue;
+
+            var attrType = attr.Attribute("type")?.Value;
+            var sqlType = attrType != null ? SqlGenerator.GetSqlType(StripPrefix(attrType)) : "NVARCHAR(MAX)";
+
+            currentTable.Columns.Add(new ColumnDefinition
+            {
+                ColumnName = attrName,
+                SqlType = sqlType,
+                IsNullable = attr.Attribute("use")?.Value != "required",
+                XmlPath = new List<string> { "@" + attrName }
+            });
+        }
+    }
+
+    private void ProcessSequenceChildren(XElement sequence, XElement contextElement, TableDefinition parentTable)
+    {
+        // First pass: count duplicate element names for disambiguation
+        var nameCountMap = new Dictionary<string, int>();
+        foreach (var child in sequence.Elements())
+        {
+            if (child.Name == Xs + "element")
+            {
+                var name = child.Attribute("name")?.Value ?? "Unknown";
+                nameCountMap.TryGetValue(name, out int count);
+                nameCountMap[name] = count + 1;
+            }
+        }
+
+        // Collect all element names for group collision detection
+        var allUsedNames = new HashSet<string>(nameCountMap.Keys);
+
+        var nameIndexMap = new Dictionary<string, int>();
+
+        foreach (var child in sequence.Elements())
+        {
+            if (child.Name == Xs + "element")
+            {
+                var name = child.Attribute("name")?.Value ?? "Unknown";
+                var isRepeating = IsRepeating(child);
+                var complexType = GetComplexType(child);
+
+                // Resolve table name (handle duplicates like ARV×2 in HL7)
+                nameIndexMap.TryGetValue(name, out int idx);
+                nameIndexMap[name] = idx + 1;
+
+                var tableName = name;
+                if (nameCountMap.TryGetValue(name, out int total) && total > 1 && idx > 0)
+                {
+                    tableName = $"{name}_{idx + 1}";
+                }
+
+                if (isRepeating)
+                {
+                    // CREATE CHILD TABLE
+                    var childTable = CreateChildTable(tableName, parentTable.TableName, isRepeating: true);
+                    childTable.XmlElementName = name;
+                    childTable.ParentTableName = parentTable.TableName;
+                    childTable.ParentXmlFieldName = name;
+
+                    if (complexType != null)
+                    {
+                        ProcessComplexTypeChildren(complexType, child, childTable);
+                    }
+                    else
+                    {
+                        // Simple repeating element - add a Value column
+                        var typeAttr = child.Attribute("type")?.Value;
+                        var sqlType = typeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(typeAttr)) : "NVARCHAR(MAX)";
+                        childTable.Columns.Add(new ColumnDefinition
+                        {
+                            ColumnName = "Value",
+                            SqlType = sqlType,
+                            IsNullable = true,
+                            XmlPath = new List<string> { name }
+                        });
+                    }
+
+                    // Add to message structure
+                    _messageStructure.Slots.Add(new MessageSlot
+                    {
+                        XmlElementName = name,
+                        TableName = tableName,
+                        IsRepeating = true
+                    });
+                }
+                else if (complexType != null)
+                {
+                    // FLATTEN singleton complex type into parent table
+                    FlattenComplexType(complexType, child, parentTable, name, new List<string> { name });
+                }
+                else
+                {
+                    // SIMPLE COLUMN
+                    var typeAttr = child.Attribute("type")?.Value;
+                    var sqlType = typeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(typeAttr)) : "NVARCHAR(MAX)";
+                    parentTable.Columns.Add(new ColumnDefinition
+                    {
+                        ColumnName = name,
+                        SqlType = sqlType,
+                        IsNullable = true,
+                        XmlPath = new List<string> { name }
+                    });
+                }
+            }
+            else if (child.Name == Xs + "sequence")
+            {
+                // Nested xs:sequence (group)
+                if (IsRepeating(child))
+                {
+                    var groupSlot = ProcessGroup(child, parentTable.TableName, allUsedNames);
+                    if (groupSlot != null)
+                        _messageStructure.Slots.Add(groupSlot);
+                }
+                else
+                {
+                    // Non-repeating nested sequence - just process children inline
+                    ProcessSequenceChildren(child, contextElement, parentTable);
+                }
+            }
+        }
+    }
+
+    private void FlattenComplexType(XElement complexType, XElement contextElement, TableDefinition table, string prefix, List<string> xmlPath)
+    {
+        var seq = complexType.Element(Xs + "sequence");
+        if (seq != null)
+        {
+            foreach (var el in seq.Elements(Xs + "element"))
+            {
+                var elName = el.Attribute("name")?.Value;
+                if (elName == null) continue;
+
+                var colName = $"{prefix}_{elName}";
+                var childXmlPath = new List<string>(xmlPath) { elName };
+
+                var elComplexType = GetComplexType(el);
+                if (elComplexType != null)
+                {
+                    // Recurse to flatten nested complex type
+                    FlattenComplexType(elComplexType, el, table, colName, childXmlPath);
+                }
+                else
+                {
+                    var elTypeAttr = el.Attribute("type")?.Value;
+                    var sqlType = elTypeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(elTypeAttr)) : "NVARCHAR(MAX)";
+                    table.Columns.Add(new ColumnDefinition
+                    {
+                        ColumnName = colName,
+                        SqlType = sqlType,
+                        IsNullable = true,
+                        XmlPath = childXmlPath
+                    });
+                }
+            }
+        }
+
+        // Handle xs:attribute elements within the complex type
+        foreach (var attr in complexType.Elements(Xs + "attribute"))
+        {
+            var attrName = attr.Attribute("name")?.Value;
+            if (attrName == null) continue;
+
+            var attrType = attr.Attribute("type")?.Value;
+            var sqlType = attrType != null ? SqlGenerator.GetSqlType(StripPrefix(attrType)) : "NVARCHAR(MAX)";
+            var colName = $"{prefix}_{attrName}";
+
+            table.Columns.Add(new ColumnDefinition
+            {
+                ColumnName = colName,
+                SqlType = sqlType,
+                IsNullable = attr.Attribute("use")?.Value != "required",
+                XmlPath = new List<string>(xmlPath) { "@" + attrName }
+            });
+        }
+    }
+
+    private MessageSlot? ProcessGroup(XElement groupSequence, string parentTableName, HashSet<string> allUsedNames)
+    {
+        var elements = groupSequence.Elements(Xs + "element").ToList();
+        if (elements.Count == 0) return null;
+
+        // Lead segment gets parent FK
+        var leadElement = elements[0];
+        var leadName = leadElement.Attribute("name")?.Value ?? "Unknown";
+        var leadIsRepeating = true; // Groups themselves are unbounded
+
+        var leadTable = CreateChildTable(leadName, parentTableName, leadIsRepeating);
+        leadTable.XmlElementName = leadName;
+
+        var leadComplexType = GetComplexType(leadElement);
+        if (leadComplexType != null)
+        {
+            ProcessComplexTypeChildren(leadComplexType, leadElement, leadTable);
+        }
+
+        var groupSlot = new MessageSlot
+        {
+            XmlElementName = leadName,
+            TableName = leadName,
+            IsRepeating = true,
+            IsGroup = true,
+            GroupChildren = new List<MessageSlot>()
+        };
+
+        // Child segments in the group get both parent and lead segment FKs
+        for (int i = 1; i < elements.Count; i++)
+        {
+            var childElement = elements[i];
+            var childName = childElement.Attribute("name")?.Value ?? "Unknown";
+            var childIsRepeating = IsRepeating(childElement);
+
+            // Only prefix with lead name if the name collides with a used name
+            var childTableName = allUsedNames.Contains(childName)
+                ? $"{leadName}_{childName}"
+                : childName;
+
+            var childTable = CreateGroupChildTable(childTableName, parentTableName, leadTable.TableName, childIsRepeating);
+            childTable.XmlElementName = childName;
+
+            var childComplexType = GetComplexType(childElement);
+            if (childComplexType != null)
+            {
+                ProcessComplexTypeChildren(childComplexType, childElement, childTable);
+            }
+
+            groupSlot.GroupChildren.Add(new MessageSlot
+            {
+                XmlElementName = childName,
+                TableName = childTableName,
+                IsRepeating = childIsRepeating
+            });
+        }
+
+        return groupSlot;
+    }
+
+    private void HandleColumnOverflow()
+    {
+        var tablesToAdd = new List<TableDefinition>();
+
+        foreach (var table in _tables.ToList())
+        {
+            if (table.Columns.Count <= MaxColumnsPerTable) continue;
+
+            // Create extension table for overflow columns
+            var extTableName = $"{table.TableName}_Ext";
+            var extTable = new TableDefinition
+            {
+                TableName = extTableName,
+                SortOrder = _sortOrder++
+            };
+
+            // PK + FK to parent
+            extTable.Columns.Add(new ColumnDefinition
+            {
+                ColumnName = "Id",
+                SqlType = "BIGINT",
+                IsIdentity = false,
+                IsPrimaryKey = true,
+                IsNullable = false
+            });
+            extTable.ForeignKeys.Add(new ForeignKeyDefinition
+            {
+                ConstraintName = $"FK_{extTableName}_{table.TableName}",
+                ColumnName = "Id",
+                ReferencedTable = table.TableName,
+                ReferencedColumn = "Id"
+            });
+
+            // Move overflow columns (keep system columns: Id, FKs, RepeatIndex)
+            var systemColCount = table.Columns.Count(c => c.IsPrimaryKey || c.ColumnName == "RepeatIndex"
+                || table.ForeignKeys.Any(fk => fk.ColumnName == c.ColumnName));
+            var dataColumns = table.Columns.Where(c => !c.IsPrimaryKey && c.ColumnName != "RepeatIndex"
+                && !table.ForeignKeys.Any(fk => fk.ColumnName == c.ColumnName)).ToList();
+
+            var keepCount = MaxColumnsPerTable - systemColCount;
+            var overflowColumns = dataColumns.Skip(keepCount).ToList();
+
+            foreach (var col in overflowColumns)
+            {
+                table.Columns.Remove(col);
+                extTable.Columns.Add(col);
+            }
+
+            tablesToAdd.Add(extTable);
+        }
+
+        _tables.AddRange(tablesToAdd);
     }
 
     private void LoadXsdChain(string rootPath)
@@ -109,268 +439,6 @@ public class XsdParser
         }
     }
 
-    private void WalkMessageSequence(XElement sequence, TableDefinition messageTable)
-    {
-        // First pass: collect all segment names at root level (direct elements)
-        // to detect duplicates and know which names are "taken"
-        var rootSegNames = new Dictionary<string, int>();
-        foreach (var child in sequence.Elements())
-        {
-            if (child.Name == Xs + "element")
-            {
-                var segName = GetSegmentShortName(child);
-                rootSegNames.TryGetValue(segName, out int count);
-                rootSegNames[segName] = count + 1;
-            }
-        }
-
-        // Collect all names used across root + groups to detect collisions
-        var allUsedNames = new HashSet<string>(rootSegNames.Keys);
-
-        // Second pass: create tables and build message structure
-        var segNameIndex = new Dictionary<string, int>();
-
-        foreach (var child in sequence.Elements())
-        {
-            if (child.Name == Xs + "element")
-            {
-                var fullName = child.Attribute("name")?.Value ?? "Unknown";
-                var segName = GetSegmentShortName(child);
-                segNameIndex.TryGetValue(segName, out int idx);
-                segNameIndex[segName] = idx + 1;
-
-                var tableName = segName;
-                if (rootSegNames[segName] > 1 && idx > 0)
-                {
-                    tableName = $"{segName}_{idx + 1}";
-                }
-
-                var isRepeating = IsRepeating(child);
-                var segTable = CreateSegmentTable(tableName, messageTable.TableName, isRepeating);
-                segTable.XmlElementName = fullName;
-                ProcessSegmentFields(child, segTable);
-
-                // Add to message structure
-                _messageStructure.Slots.Add(new MessageSlot
-                {
-                    XmlElementName = fullName,
-                    TableName = tableName,
-                    IsRepeating = isRepeating
-                });
-            }
-            else if (child.Name == Xs + "sequence")
-            {
-                var groupSlot = ProcessGroup(child, messageTable.TableName, allUsedNames);
-                if (groupSlot != null)
-                    _messageStructure.Slots.Add(groupSlot);
-            }
-        }
-    }
-
-    private MessageSlot? ProcessGroup(XElement groupSequence, string messageTableName, HashSet<string> allUsedNames)
-    {
-        var elements = groupSequence.Elements(Xs + "element").ToList();
-        if (elements.Count == 0) return null;
-
-        // Lead segment gets MessageId FK
-        var leadElement = elements[0];
-        var leadFullName = leadElement.Attribute("name")?.Value ?? "Unknown";
-        var leadSegName = GetSegmentShortName(leadElement);
-        var leadIsRepeating = true; // Groups themselves are unbounded
-
-        var leadTable = CreateSegmentTable(leadSegName, messageTableName, leadIsRepeating);
-        leadTable.XmlElementName = leadFullName;
-        ProcessSegmentFields(leadElement, leadTable);
-
-        var groupSlot = new MessageSlot
-        {
-            XmlElementName = leadFullName,
-            TableName = leadSegName,
-            IsRepeating = true,
-            IsGroup = true,
-            GroupChildren = new List<MessageSlot>()
-        };
-
-        // Child segments in the group get both MessageId and LeadSegmentId FKs
-        for (int i = 1; i < elements.Count; i++)
-        {
-            var childElement = elements[i];
-            var childFullName = childElement.Attribute("name")?.Value ?? "Unknown";
-            var childSegName = GetSegmentShortName(childElement);
-            var childIsRepeating = IsRepeating(childElement);
-
-            // Only prefix with lead segment name if the name collides with a root-level name
-            var childTableName = allUsedNames.Contains(childSegName)
-                ? $"{leadSegName}_{childSegName}"
-                : childSegName;
-
-            var childTable = CreateGroupChildTable(childTableName, messageTableName, leadTable.TableName, childIsRepeating);
-            childTable.XmlElementName = childFullName;
-            ProcessSegmentFields(childElement, childTable);
-
-            groupSlot.GroupChildren.Add(new MessageSlot
-            {
-                XmlElementName = childFullName,
-                TableName = childTableName,
-                IsRepeating = childIsRepeating
-            });
-        }
-
-        return groupSlot;
-    }
-
-    private void ProcessSegmentFields(XElement segElement, TableDefinition segTable)
-    {
-        var typeName = segElement.Attribute("type")?.Value;
-        if (typeName == null) return;
-
-        var resolvedType = ResolveTypeRef(typeName, segElement);
-        if (resolvedType == null) return;
-
-        var seq = resolvedType.Element(Xs + "sequence");
-        if (seq == null) return;
-
-        foreach (var field in seq.Elements(Xs + "element"))
-        {
-            var fieldName = field.Attribute("name")?.Value;
-            if (fieldName == null) continue;
-
-            var isFieldRepeating = IsRepeating(field);
-            var fieldTypeAttr = field.Attribute("type")?.Value;
-
-            if (isFieldRepeating)
-            {
-                // Create a child table for this repeating field
-                var childTableName = fieldName;
-                var childTable = CreateChildFieldTable(childTableName, segTable.TableName);
-                childTable.ParentTableName = segTable.TableName;
-                childTable.ParentXmlFieldName = fieldName;
-
-                if (fieldTypeAttr != null)
-                {
-                    var fieldType = ResolveTypeRef(fieldTypeAttr, field);
-                    if (fieldType != null && IsComplexType(fieldType))
-                    {
-                        // For child field tables, XmlPath is relative to the repeating element
-                        FlattenComplexType(fieldType, field, childTable, fieldName, new List<string>());
-                    }
-                    else
-                    {
-                        // Simple repeating field
-                        var sqlType = fieldTypeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(fieldTypeAttr)) : "NVARCHAR(MAX)";
-                        childTable.Columns.Add(new ColumnDefinition
-                        {
-                            ColumnName = fieldName,
-                            SqlType = sqlType,
-                            IsNullable = true,
-                            XmlPath = new List<string> { fieldName }
-                        });
-                    }
-                }
-            }
-            else
-            {
-                // Non-repeating field
-                if (fieldTypeAttr != null)
-                {
-                    var fieldType = ResolveTypeRef(fieldTypeAttr, field);
-                    if (fieldType != null && IsComplexType(fieldType))
-                    {
-                        // Flatten complex type into parent table
-                        FlattenComplexType(fieldType, field, segTable, fieldName, new List<string> { fieldName });
-                    }
-                    else
-                    {
-                        // Simple type -> single column
-                        var sqlType = SqlGenerator.GetSqlType(StripPrefix(fieldTypeAttr));
-                        segTable.Columns.Add(new ColumnDefinition
-                        {
-                            ColumnName = fieldName,
-                            SqlType = sqlType,
-                            IsNullable = true,
-                            XmlPath = new List<string> { fieldName }
-                        });
-                    }
-                }
-                else
-                {
-                    // Inline anonymous complex type
-                    var inlineCt = field.Element(Xs + "complexType");
-                    if (inlineCt != null)
-                    {
-                        FlattenComplexType(inlineCt, field, segTable, fieldName, new List<string> { fieldName });
-                    }
-                    else
-                    {
-                        segTable.Columns.Add(new ColumnDefinition
-                        {
-                            ColumnName = fieldName,
-                            SqlType = "NVARCHAR(MAX)",
-                            IsNullable = true,
-                            XmlPath = new List<string> { fieldName }
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    private void FlattenComplexType(XElement complexType, XElement contextElement, TableDefinition table, string prefix, List<string> xmlPath)
-    {
-        var seq = complexType.Element(Xs + "sequence");
-        if (seq == null) return;
-
-        foreach (var el in seq.Elements(Xs + "element"))
-        {
-            var elName = el.Attribute("name")?.Value;
-            if (elName == null) continue;
-
-            var colName = $"{prefix}_{elName}";
-            var elTypeAttr = el.Attribute("type")?.Value;
-            var childXmlPath = new List<string>(xmlPath) { elName };
-
-            if (elTypeAttr != null)
-            {
-                var elType = ResolveTypeRef(elTypeAttr, el);
-                if (elType != null && IsComplexType(elType))
-                {
-                    // Recurse to flatten nested complex type
-                    FlattenComplexType(elType, el, table, colName, childXmlPath);
-                }
-                else
-                {
-                    var sqlType = SqlGenerator.GetSqlType(StripPrefix(elTypeAttr));
-                    table.Columns.Add(new ColumnDefinition
-                    {
-                        ColumnName = colName,
-                        SqlType = sqlType,
-                        IsNullable = true,
-                        XmlPath = childXmlPath
-                    });
-                }
-            }
-            else
-            {
-                // Inline anonymous complex type
-                var inlineCt = el.Element(Xs + "complexType");
-                if (inlineCt != null)
-                {
-                    FlattenComplexType(inlineCt, el, table, colName, childXmlPath);
-                }
-                else
-                {
-                    table.Columns.Add(new ColumnDefinition
-                    {
-                        ColumnName = colName,
-                        SqlType = "NVARCHAR(MAX)",
-                        IsNullable = true,
-                        XmlPath = childXmlPath
-                    });
-                }
-            }
-        }
-    }
-
     private XElement? ResolveTypeRef(string typeRef, XElement context)
     {
         var localName = StripPrefix(typeRef);
@@ -428,14 +496,6 @@ public class XsdParser
         return maxOccurs == "unbounded" || (int.TryParse(maxOccurs, out var m) && m > 1);
     }
 
-    private static string GetSegmentShortName(XElement element)
-    {
-        var name = element.Attribute("name")?.Value ?? "Unknown";
-        // Extract segment code: e.g. "EVN_EventType" -> "EVN", "PID_PatientIdentification" -> "PID"
-        var underscoreIdx = name.IndexOf('_');
-        return underscoreIdx > 0 ? name[..underscoreIdx] : name;
-    }
-
     private TableDefinition CreateTable(string tableName)
     {
         var table = new TableDefinition
@@ -455,12 +515,12 @@ public class XsdParser
         return table;
     }
 
-    private TableDefinition CreateSegmentTable(string tableName, string messageTableName, bool isRepeating)
+    private TableDefinition CreateChildTable(string tableName, string parentTableName, bool isRepeating)
     {
         var table = CreateTable(tableName);
 
-        // FK to message table
-        var fkCol = $"{messageTableName}Id";
+        // FK to parent table
+        var fkCol = $"{parentTableName}Id";
         table.Columns.Add(new ColumnDefinition
         {
             ColumnName = fkCol,
@@ -469,9 +529,9 @@ public class XsdParser
         });
         table.ForeignKeys.Add(new ForeignKeyDefinition
         {
-            ConstraintName = $"FK_{tableName}_{messageTableName}",
+            ConstraintName = $"FK_{tableName}_{parentTableName}",
             ColumnName = fkCol,
-            ReferencedTable = messageTableName,
+            ReferencedTable = parentTableName,
             ReferencedColumn = "Id"
         });
 
@@ -488,23 +548,23 @@ public class XsdParser
         return table;
     }
 
-    private TableDefinition CreateGroupChildTable(string tableName, string messageTableName, string leadTableName, bool isRepeating)
+    private TableDefinition CreateGroupChildTable(string tableName, string parentTableName, string leadTableName, bool isRepeating)
     {
         var table = CreateTable(tableName);
 
-        // FK to message table
-        var msgFkCol = $"{messageTableName}Id";
+        // FK to parent table
+        var parentFkCol = $"{parentTableName}Id";
         table.Columns.Add(new ColumnDefinition
         {
-            ColumnName = msgFkCol,
+            ColumnName = parentFkCol,
             SqlType = "BIGINT",
             IsNullable = false
         });
         table.ForeignKeys.Add(new ForeignKeyDefinition
         {
-            ConstraintName = $"FK_{tableName}_{messageTableName}",
-            ColumnName = msgFkCol,
-            ReferencedTable = messageTableName,
+            ConstraintName = $"FK_{tableName}_{parentTableName}",
+            ColumnName = parentFkCol,
+            ReferencedTable = parentTableName,
             ReferencedColumn = "Id"
         });
 
@@ -533,35 +593,6 @@ public class XsdParser
                 IsNullable = false
             });
         }
-
-        return table;
-    }
-
-    private TableDefinition CreateChildFieldTable(string tableName, string parentTableName)
-    {
-        var table = CreateTable(tableName);
-
-        var fkCol = $"{parentTableName}Id";
-        table.Columns.Add(new ColumnDefinition
-        {
-            ColumnName = fkCol,
-            SqlType = "BIGINT",
-            IsNullable = false
-        });
-        table.ForeignKeys.Add(new ForeignKeyDefinition
-        {
-            ConstraintName = $"FK_{tableName}_{parentTableName}",
-            ColumnName = fkCol,
-            ReferencedTable = parentTableName,
-            ReferencedColumn = "Id"
-        });
-
-        table.Columns.Add(new ColumnDefinition
-        {
-            ColumnName = "RepeatIndex",
-            SqlType = "INT",
-            IsNullable = false
-        });
 
         return table;
     }

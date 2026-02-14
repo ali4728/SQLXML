@@ -48,6 +48,24 @@ public static class SqlGenerator
 
     public static string GetSqlType(string typeName)
     {
+        // Check standard XSD types first (strip "xs:" or "xsd:" prefix if present)
+        var xsdType = typeName.Replace("xs:", "").Replace("xsd:", "");
+        switch (xsdType)
+        {
+            case "string": return "NVARCHAR(MAX)";
+            case "int": return "INT";
+            case "integer": return "INT";
+            case "long": return "BIGINT";
+            case "short": return "SMALLINT";
+            case "decimal": return "DECIMAL(18,4)";
+            case "float": return "FLOAT";
+            case "double": return "FLOAT";
+            case "boolean": return "BIT";
+            case "date": return "NVARCHAR(20)";
+            case "dateTime": return "NVARCHAR(50)";
+            case "time": return "NVARCHAR(20)";
+        }
+
         // Strip suffixes like _0, _1, _396 etc. to get the base type name
         var baseType = GetBaseTypeName(typeName);
 
