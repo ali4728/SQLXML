@@ -104,9 +104,11 @@ if (command == "schema")
                 foreach (var file in loadedFiles)
                 {
                     var sha = MetadataRepository.ComputeFileSha256(file.FilePath);
+                    var xsdContent = File.ReadAllText(file.FilePath);
                     meta.InsertSchemaFile(
                         schemaSetId, file.FileRole, file.FileName,
                         file.FilePath, file.TargetNamespace, sha,
+                        contentXml: xsdContent,
                         importedBy: Environment.UserName);
                 }
             }
@@ -242,9 +244,11 @@ if (command == "process")
                 foreach (var file in loadedFiles)
                 {
                     var sha = MetadataRepository.ComputeFileSha256(file.FilePath);
+                    var xsdContent = File.ReadAllText(file.FilePath);
                     meta.InsertSchemaFile(
                         schemaSetId, file.FileRole, file.FileName,
                         file.FilePath, file.TargetNamespace, sha,
+                        contentXml: xsdContent,
                         importedBy: Environment.UserName);
                 }
             }

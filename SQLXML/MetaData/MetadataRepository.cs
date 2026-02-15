@@ -121,14 +121,15 @@ public class MetadataRepository : IDisposable
         string? filePathOrUri,
         string? targetNamespace,
         string? fileSha256,
+        string? contentXml = null,
         string? importedBy = null)
     {
         const string sql = """
             INSERT INTO dbo.SQLXML_XsdSchemaFile
                 (SchemaSetId, FileRole, FileName, FilePathOrUri, TargetNamespace,
-                 FileSha256, ImportedBy)
+                 ContentXml, FileSha256, ImportedBy)
             VALUES
-                (@SetId, @Role, @Name, @Path, @Ns, @Sha, @By);
+                (@SetId, @Role, @Name, @Path, @Ns, @Xml, @Sha, @By);
             SELECT SCOPE_IDENTITY();
             """;
 
@@ -138,6 +139,7 @@ public class MetadataRepository : IDisposable
         cmd.Parameters.AddWithValue("@Name", fileName);
         cmd.Parameters.AddWithValue("@Path", (object?)filePathOrUri ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@Ns", (object?)targetNamespace ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@Xml", (object?)contentXml ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@Sha", (object?)fileSha256 ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@By", (object?)importedBy ?? DBNull.Value);
         return Convert.ToInt64(cmd.ExecuteScalar());
