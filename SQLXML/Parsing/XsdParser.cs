@@ -21,6 +21,7 @@ public class XsdParser
 
     private readonly List<TableDefinition> _tables = new();
     private readonly MessageStructure _messageStructure = new();
+    private readonly HashSet<string> _createdTableNames = new(StringComparer.OrdinalIgnoreCase);
     private int _sortOrder;
 
     public (List<TableDefinition> Tables, MessageStructure Structure) Parse(string rootXsdPath)
@@ -498,9 +499,18 @@ public class XsdParser
 
     private TableDefinition CreateTable(string tableName)
     {
+        // Auto-disambiguate if this table name was already used globally
+        var finalName = tableName;
+        var suffix = 2;
+        while (!_createdTableNames.Add(finalName))
+        {
+            finalName = $"{tableName}_{suffix}";
+            suffix++;
+        }
+
         var table = new TableDefinition
         {
-            TableName = tableName,
+            TableName = finalName,
             SortOrder = _sortOrder++
         };
         table.Columns.Add(new ColumnDefinition
