@@ -54,10 +54,15 @@ public class XmlProcessor
         var xmlChildren = root.Elements().ToList();
         int idx = 0;
 
+        // Build a set of all slot element names so we don't skip past them
+        var slotNames = new HashSet<string>(_structure.Slots.Select(s => s.XmlElementName));
+
         foreach (var slot in _structure.Slots)
         {
-            // Skip XML children that don't match any slot (simple columns already extracted above)
-            while (idx < xmlChildren.Count && xmlChildren[idx].Name.LocalName != slot.XmlElementName)
+            // Skip XML children that don't match any slot, but stop if we hit another slot's element
+            while (idx < xmlChildren.Count
+                   && xmlChildren[idx].Name.LocalName != slot.XmlElementName
+                   && !slotNames.Contains(xmlChildren[idx].Name.LocalName))
                 idx++;
 
             if (slot.IsGroup)

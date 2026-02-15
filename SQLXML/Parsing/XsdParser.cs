@@ -169,13 +169,16 @@ public class XsdParser
                         });
                     }
 
-                    // Add to message structure
-                    _messageStructure.Slots.Add(new MessageSlot
+                    // Only add to root-level message structure, not for nested tables
+                    if (createTablesForSingletons)
                     {
-                        XmlElementName = name,
-                        TableName = tableName,
-                        IsRepeating = true
-                    });
+                        _messageStructure.Slots.Add(new MessageSlot
+                        {
+                            XmlElementName = name,
+                            TableName = tableName,
+                            IsRepeating = true
+                        });
+                    }
                 }
                 else if (complexType != null)
                 {
@@ -198,7 +201,7 @@ public class XsdParser
                     else
                     {
                         // FLATTEN singleton complex type into parent table
-                        FlattenComplexType(complexType, resolvedChild, parentTable, name, new List<string> { name });
+                        FlattenComplexType(complexType, resolvedChild, parentTable, name, new List<string> { name }, new List<string> { name });
                     }
                 }
                 else
@@ -276,12 +279,8 @@ public class XsdParser
                         });
                     }
 
-                    _messageStructure.Slots.Add(new MessageSlot
-                    {
-                        XmlElementName = elName,
-                        TableName = elName,
-                        IsRepeating = true
-                    });
+                    // No slot addition here — child field tables are discovered
+                    // via _childFieldTables in XmlProcessor.ExtractSegmentRow
                 }
                 else if (elComplexType != null)
                 {

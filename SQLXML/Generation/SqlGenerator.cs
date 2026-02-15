@@ -10,6 +10,14 @@ public static class SqlGenerator
         var sb = new StringBuilder();
         var sorted = tables.OrderBy(t => t.SortOrder).ToList();
 
+        // Drop tables in reverse order (children before parents) to respect FK constraints
+        foreach (var table in sorted.AsEnumerable().Reverse())
+        {
+            sb.AppendLine($"DROP TABLE IF EXISTS [{table.TableName}];");
+        }
+        sb.AppendLine("GO");
+        sb.AppendLine();
+
         foreach (var table in sorted)
         {
             sb.AppendLine($"CREATE TABLE [{table.TableName}] (");
