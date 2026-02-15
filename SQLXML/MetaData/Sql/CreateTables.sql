@@ -14,18 +14,18 @@
    1) Schema Set Registry
    ========================= */
 
-IF OBJECT_ID('dbo.XsdSchemaSet', 'U') IS NOT NULL DROP TABLE dbo.XsdSchemaSet;
+IF OBJECT_ID('dbo.SQLXML_XsdSchemaSet', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_XsdSchemaSet;
 GO
-CREATE TABLE dbo.XsdSchemaSet
+CREATE TABLE dbo.SQLXML_XsdSchemaSet
 (
-    SchemaSetId          BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_XsdSchemaSet PRIMARY KEY,
+    SchemaSetId          BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_XsdSchemaSet PRIMARY KEY,
     SchemaSetKey         NVARCHAR(200) NOT NULL,   -- your stable key (ex: 'CCDA_CDA', 'MyVendor_2026Q1')
     DisplayName          NVARCHAR(200) NULL,
     Description          NVARCHAR(1000) NULL,
 
     -- Versioning (your choice: semantic version, vendor version, date-based)
     VersionLabel         NVARCHAR(50)  NOT NULL,   -- ex: '1.0.0', '2026-02-14', 'v3'
-    IsActive             BIT NOT NULL CONSTRAINT DF_XsdSchemaSet_IsActive DEFAULT (1),
+    IsActive             BIT NOT NULL CONSTRAINT DF_SQLXML_XsdSchemaSet_IsActive DEFAULT (1),
 
     -- Optional: identify the “root” file (main XSD)
     RootXsdFileName      NVARCHAR(260) NULL,
@@ -33,11 +33,11 @@ CREATE TABLE dbo.XsdSchemaSet
 
     -- Content fingerprinting
     CombinedSha256       CHAR(64) NULL,            -- hash of canonicalized/concatenated content if you do that
-    CreatedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_XsdSchemaSet_CreatedUtc DEFAULT (SYSUTCDATETIME()),
+    CreatedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_XsdSchemaSet_CreatedUtc DEFAULT (SYSUTCDATETIME()),
     CreatedBy            NVARCHAR(128) NULL,
     Notes                NVARCHAR(2000) NULL,
 
-    CONSTRAINT UQ_XsdSchemaSet_KeyVersion UNIQUE (SchemaSetKey, VersionLabel)
+    CONSTRAINT UQ_SQLXML_XsdSchemaSet_KeyVersion UNIQUE (SchemaSetKey, VersionLabel)
 );
 GO
 
@@ -45,13 +45,13 @@ GO
    2) Individual XSD Files under a Schema Set
    ========================= */
 
-IF OBJECT_ID('dbo.XsdSchemaFile', 'U') IS NOT NULL DROP TABLE dbo.XsdSchemaFile;
+IF OBJECT_ID('dbo.SQLXML_XsdSchemaFile', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_XsdSchemaFile;
 GO
-CREATE TABLE dbo.XsdSchemaFile
+CREATE TABLE dbo.SQLXML_XsdSchemaFile
 (
-    SchemaFileId         BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_XsdSchemaFile PRIMARY KEY,
-    SchemaSetId          BIGINT NOT NULL CONSTRAINT FK_XsdSchemaFile_SchemaSet
-                         REFERENCES dbo.XsdSchemaSet(SchemaSetId),
+    SchemaFileId         BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_XsdSchemaFile PRIMARY KEY,
+    SchemaSetId          BIGINT NOT NULL CONSTRAINT FK_SQLXML_XsdSchemaFile_SchemaSet
+                         REFERENCES dbo.SQLXML_XsdSchemaSet(SchemaSetId),
 
     FileRole             NVARCHAR(30) NOT NULL,    -- 'Root' | 'Include' | 'Import' | 'Redefine' | 'Other'
     FileName             NVARCHAR(260) NOT NULL,
@@ -63,10 +63,10 @@ CREATE TABLE dbo.XsdSchemaFile
     ContentText          NVARCHAR(MAX) NULL,       -- or store text (pick one; you can keep both in draft)
     FileSha256           CHAR(64) NULL,
 
-    ImportedUtc          DATETIME2(3) NOT NULL CONSTRAINT DF_XsdSchemaFile_ImportedUtc DEFAULT (SYSUTCDATETIME()),
+    ImportedUtc          DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_XsdSchemaFile_ImportedUtc DEFAULT (SYSUTCDATETIME()),
     ImportedBy           NVARCHAR(128) NULL,
 
-    CONSTRAINT UQ_XsdSchemaFile_UniquePerSet UNIQUE (SchemaSetId, FileName)
+    CONSTRAINT UQ_SQLXML_XsdSchemaFile_UniquePerSet UNIQUE (SchemaSetId, FileName)
 );
 GO
 
@@ -75,13 +75,13 @@ GO
    One row per “generation run” for a schema set
    ========================= */
 
-IF OBJECT_ID('dbo.XsdGenerationRun', 'U') IS NOT NULL DROP TABLE dbo.XsdGenerationRun;
+IF OBJECT_ID('dbo.SQLXML_XsdGenerationRun', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_XsdGenerationRun;
 GO
-CREATE TABLE dbo.XsdGenerationRun
+CREATE TABLE dbo.SQLXML_XsdGenerationRun
 (
-    GenerationRunId      BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_XsdGenerationRun PRIMARY KEY,
-    SchemaSetId          BIGINT NOT NULL CONSTRAINT FK_XsdGenerationRun_SchemaSet
-                         REFERENCES dbo.XsdSchemaSet(SchemaSetId),
+    GenerationRunId      BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_XsdGenerationRun PRIMARY KEY,
+    SchemaSetId          BIGINT NOT NULL CONSTRAINT FK_SQLXML_XsdGenerationRun_SchemaSet
+                         REFERENCES dbo.SQLXML_XsdSchemaSet(SchemaSetId),
 
     -- This is your “execution versioning”
     RunVersion           INT NOT NULL,             -- increment per SchemaSetId
@@ -89,9 +89,9 @@ CREATE TABLE dbo.XsdGenerationRun
     ToolVersion          NVARCHAR(50)  NULL,       -- ex: git tag/commit
     ConfigJson           NVARCHAR(MAX) NULL,       -- flattening rules, naming rules, etc.
 
-    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_XsdGenerationRun_StartedUtc DEFAULT (SYSUTCDATETIME()),
+    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_XsdGenerationRun_StartedUtc DEFAULT (SYSUTCDATETIME()),
     FinishedUtc          DATETIME2(3) NULL,
-    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_XsdGenerationRun_Status DEFAULT ('Running'),
+    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_SQLXML_XsdGenerationRun_Status DEFAULT ('Running'),
     Message              NVARCHAR(2000) NULL
 );
 GO
@@ -103,15 +103,15 @@ GO
    4) Generated SQL Scripts (CREATE TABLE, indexes, constraints, etc.)
    ========================= */
 
-IF OBJECT_ID('dbo.SqlGeneratedScript', 'U') IS NOT NULL DROP TABLE dbo.SqlGeneratedScript;
+IF OBJECT_ID('dbo.SQLXML_SqlGeneratedScript', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlGeneratedScript;
 GO
-CREATE TABLE dbo.SqlGeneratedScript
+CREATE TABLE dbo.SQLXML_SqlGeneratedScript
 (
-    ScriptId             BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SqlGeneratedScript PRIMARY KEY,
-    SchemaSetId          BIGINT NOT NULL CONSTRAINT FK_SqlGeneratedScript_SchemaSet
-                         REFERENCES dbo.XsdSchemaSet(SchemaSetId),
-    GenerationRunId      BIGINT NOT NULL CONSTRAINT FK_SqlGeneratedScript_Run
-                         REFERENCES dbo.XsdGenerationRun(GenerationRunId),
+    ScriptId             BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_SqlGeneratedScript PRIMARY KEY,
+    SchemaSetId          BIGINT NOT NULL CONSTRAINT FK_SQLXML_SqlGeneratedScript_SchemaSet
+                         REFERENCES dbo.SQLXML_XsdSchemaSet(SchemaSetId),
+    GenerationRunId      BIGINT NOT NULL CONSTRAINT FK_SQLXML_SqlGeneratedScript_Run
+                         REFERENCES dbo.SQLXML_XsdGenerationRun(GenerationRunId),
 
     ScriptType           NVARCHAR(30) NOT NULL,    -- 'CreateTable' | 'AlterTable' | 'CreateIndex' | 'CreateSchema' | etc.
     TargetSchemaName     SYSNAME NULL,             -- ex: 'dbo', 'stg', etc.
@@ -123,13 +123,13 @@ CREATE TABLE dbo.SqlGeneratedScript
     -- If you want “apply ordering”
     ApplyOrder           INT NULL,                 -- e.g., schemas first, tables next, FKs last
 
-    CreatedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SqlGeneratedScript_CreatedUtc DEFAULT (SYSUTCDATETIME())
+    CreatedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_SqlGeneratedScript_CreatedUtc DEFAULT (SYSUTCDATETIME())
 );
 GO
 
-CREATE INDEX IX_SqlGeneratedScript_SchemaSet ON dbo.SqlGeneratedScript(SchemaSetId, GenerationRunId);
+CREATE INDEX IX_SQLXML_SqlGeneratedScript_SchemaSet ON dbo.SQLXML_SqlGeneratedScript(SchemaSetId, GenerationRunId);
 GO
-CREATE INDEX IX_SqlGeneratedScript_Target ON dbo.SqlGeneratedScript(TargetSchemaName, TargetObjectName);
+CREATE INDEX IX_SQLXML_SqlGeneratedScript_Target ON dbo.SQLXML_SqlGeneratedScript(TargetSchemaName, TargetObjectName);
 GO
 
 
@@ -138,21 +138,21 @@ GO
    One row per apply attempt.
    ========================= */
 
-IF OBJECT_ID('dbo.SqlApplyRun', 'U') IS NOT NULL DROP TABLE dbo.SqlApplyRun;
+IF OBJECT_ID('dbo.SQLXML_SqlApplyRun', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlApplyRun;
 GO
-CREATE TABLE dbo.SqlApplyRun
+CREATE TABLE dbo.SQLXML_SqlApplyRun
 (
-    ApplyRunId           BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SqlApplyRun PRIMARY KEY,
-    SchemaSetId          BIGINT NOT NULL CONSTRAINT FK_SqlApplyRun_SchemaSet
-                         REFERENCES dbo.XsdSchemaSet(SchemaSetId),
-    GenerationRunId      BIGINT NULL CONSTRAINT FK_SqlApplyRun_GenerationRun
-                         REFERENCES dbo.XsdGenerationRun(GenerationRunId),
+    ApplyRunId           BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_SqlApplyRun PRIMARY KEY,
+    SchemaSetId          BIGINT NOT NULL CONSTRAINT FK_SQLXML_SqlApplyRun_SchemaSet
+                         REFERENCES dbo.SQLXML_XsdSchemaSet(SchemaSetId),
+    GenerationRunId      BIGINT NULL CONSTRAINT FK_SQLXML_SqlApplyRun_GenerationRun
+                         REFERENCES dbo.SQLXML_XsdGenerationRun(GenerationRunId),
 
     TargetDatabaseName   SYSNAME NOT NULL,
     TargetServerName     NVARCHAR(200) NULL,       -- optional
-    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SqlApplyRun_StartedUtc DEFAULT (SYSUTCDATETIME()),
+    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_SqlApplyRun_StartedUtc DEFAULT (SYSUTCDATETIME()),
     FinishedUtc          DATETIME2(3) NULL,
-    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_SqlApplyRun_Status DEFAULT ('Running'),
+    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_SQLXML_SqlApplyRun_Status DEFAULT ('Running'),
 
     AppliedBy            NVARCHAR(128) NULL,
     Message              NVARCHAR(2000) NULL
@@ -160,25 +160,25 @@ CREATE TABLE dbo.SqlApplyRun
 GO
 
 /* Detail rows: which scripts were applied, and outcomes */
-IF OBJECT_ID('dbo.SqlApplyRunDetail', 'U') IS NOT NULL DROP TABLE dbo.SqlApplyRunDetail;
+IF OBJECT_ID('dbo.SQLXML_SqlApplyRunDetail', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlApplyRunDetail;
 GO
-CREATE TABLE dbo.SqlApplyRunDetail
+CREATE TABLE dbo.SQLXML_SqlApplyRunDetail
 (
-    ApplyRunDetailId     BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SqlApplyRunDetail PRIMARY KEY,
-    ApplyRunId           BIGINT NOT NULL CONSTRAINT FK_SqlApplyRunDetail_ApplyRun
-                         REFERENCES dbo.SqlApplyRun(ApplyRunId),
-    ScriptId             BIGINT NOT NULL CONSTRAINT FK_SqlApplyRunDetail_Script
-                         REFERENCES dbo.SqlGeneratedScript(ScriptId),
+    ApplyRunDetailId     BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_SqlApplyRunDetail PRIMARY KEY,
+    ApplyRunId           BIGINT NOT NULL CONSTRAINT FK_SQLXML_SqlApplyRunDetail_ApplyRun
+                         REFERENCES dbo.SQLXML_SqlApplyRun(ApplyRunId),
+    ScriptId             BIGINT NOT NULL CONSTRAINT FK_SQLXML_SqlApplyRunDetail_Script
+                         REFERENCES dbo.SQLXML_SqlGeneratedScript(ScriptId),
 
-    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SqlApplyRunDetail_StartedUtc DEFAULT (SYSUTCDATETIME()),
+    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_SqlApplyRunDetail_StartedUtc DEFAULT (SYSUTCDATETIME()),
     FinishedUtc          DATETIME2(3) NULL,
-    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_SqlApplyRunDetail_Status DEFAULT ('Running'),
+    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_SQLXML_SqlApplyRunDetail_Status DEFAULT ('Running'),
     ErrorNumber          INT NULL,
     ErrorMessage         NVARCHAR(4000) NULL
 );
 GO
 
-CREATE INDEX IX_SqlApplyRunDetail_ApplyRun ON dbo.SqlApplyRunDetail(ApplyRunId, Status);
+CREATE INDEX IX_SQLXML_SqlApplyRunDetail_ApplyRun ON dbo.SQLXML_SqlApplyRunDetail(ApplyRunId, Status);
 GO
 
 
@@ -187,22 +187,22 @@ GO
    Track each inbound file/batch load using a given schema set.
    ========================= */
 
-IF OBJECT_ID('dbo.XmlLoadRun', 'U') IS NOT NULL DROP TABLE dbo.XmlLoadRun;
+IF OBJECT_ID('dbo.SQLXML_XmlLoadRun', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_XmlLoadRun;
 GO
-CREATE TABLE dbo.XmlLoadRun
+CREATE TABLE dbo.SQLXML_XmlLoadRun
 (
-    LoadRunId            BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_XmlLoadRun PRIMARY KEY,
-    SchemaSetId          BIGINT NOT NULL CONSTRAINT FK_XmlLoadRun_SchemaSet
-                         REFERENCES dbo.XsdSchemaSet(SchemaSetId),
+    LoadRunId            BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_XmlLoadRun PRIMARY KEY,
+    SchemaSetId          BIGINT NOT NULL CONSTRAINT FK_SQLXML_XmlLoadRun_SchemaSet
+                         REFERENCES dbo.SQLXML_XsdSchemaSet(SchemaSetId),
 
     SourceSystem         NVARCHAR(100) NULL,
     SourceFileName       NVARCHAR(260) NULL,
     SourceUri            NVARCHAR(1000) NULL,
     SourceFileSha256     CHAR(64) NULL,
 
-    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_XmlLoadRun_StartedUtc DEFAULT (SYSUTCDATETIME()),
+    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_XmlLoadRun_StartedUtc DEFAULT (SYSUTCDATETIME()),
     FinishedUtc          DATETIME2(3) NULL,
-    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_XmlLoadRun_Status DEFAULT ('Running'),
+    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_SQLXML_XmlLoadRun_Status DEFAULT ('Running'),
 
     RowsInserted         BIGINT NULL,
     RowsUpdated          BIGINT NULL,
@@ -213,19 +213,19 @@ CREATE TABLE dbo.XmlLoadRun
 GO
 
 /* Row-level or table-level load logging (keep it table-level for sanity) */
-IF OBJECT_ID('dbo.XmlLoadRunTableLog', 'U') IS NOT NULL DROP TABLE dbo.XmlLoadRunTableLog;
+IF OBJECT_ID('dbo.SQLXML_XmlLoadRunTableLog', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_XmlLoadRunTableLog;
 GO
-CREATE TABLE dbo.XmlLoadRunTableLog
+CREATE TABLE dbo.SQLXML_XmlLoadRunTableLog
 (
-    LoadRunTableLogId    BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_XmlLoadRunTableLog PRIMARY KEY,
-    LoadRunId            BIGINT NOT NULL CONSTRAINT FK_XmlLoadRunTableLog_LoadRun
-                         REFERENCES dbo.XmlLoadRun(LoadRunId),
+    LoadRunTableLogId    BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_XmlLoadRunTableLog PRIMARY KEY,
+    LoadRunId            BIGINT NOT NULL CONSTRAINT FK_SQLXML_XmlLoadRunTableLog_LoadRun
+                         REFERENCES dbo.SQLXML_XmlLoadRun(LoadRunId),
 
     TargetSchemaName     SYSNAME NOT NULL,
     TargetTableName      SYSNAME NOT NULL,
-    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_XmlLoadRunTableLog_StartedUtc DEFAULT (SYSUTCDATETIME()),
+    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_XmlLoadRunTableLog_StartedUtc DEFAULT (SYSUTCDATETIME()),
     FinishedUtc          DATETIME2(3) NULL,
-    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_XmlLoadRunTableLog_Status DEFAULT ('Running'),
+    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_SQLXML_XmlLoadRunTableLog_Status DEFAULT ('Running'),
 
     RowsInserted         BIGINT NULL,
     RowsRejected         BIGINT NULL,
@@ -233,7 +233,7 @@ CREATE TABLE dbo.XmlLoadRunTableLog
 );
 GO
 
-CREATE INDEX IX_XmlLoadRunTableLog_LoadRun ON dbo.XmlLoadRunTableLog(LoadRunId, Status);
+CREATE INDEX IX_SQLXML_XmlLoadRunTableLog_LoadRun ON dbo.SQLXML_XmlLoadRunTableLog(LoadRunId, Status);
 GO
 
 
@@ -241,12 +241,12 @@ GO
    7) Central Error Log (optional but handy)
    ========================= */
 
-IF OBJECT_ID('dbo.PipelineErrorLog', 'U') IS NOT NULL DROP TABLE dbo.PipelineErrorLog;
+IF OBJECT_ID('dbo.SQLXML_PipelineErrorLog', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_PipelineErrorLog;
 GO
-CREATE TABLE dbo.PipelineErrorLog
+CREATE TABLE dbo.SQLXML_PipelineErrorLog
 (
-    ErrorLogId           BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_PipelineErrorLog PRIMARY KEY,
-    OccurredUtc          DATETIME2(3) NOT NULL CONSTRAINT DF_PipelineErrorLog_OccurredUtc DEFAULT (SYSUTCDATETIME()),
+    ErrorLogId           BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_PipelineErrorLog PRIMARY KEY,
+    OccurredUtc          DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_PipelineErrorLog_OccurredUtc DEFAULT (SYSUTCDATETIME()),
     Area                 NVARCHAR(50) NOT NULL,     -- 'Generate' | 'Apply' | 'Load'
     SchemaSetId          BIGINT NULL,
     GenerationRunId      BIGINT NULL,
