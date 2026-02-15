@@ -77,3 +77,4 @@ nul
 CLAUDE.md
 SampleFiles/
 Schemas/
+appsettings.Development.json

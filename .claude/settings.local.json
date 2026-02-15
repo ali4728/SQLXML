@@ -6,7 +6,8 @@
       "Bash(echo:*)",
       "Bash(dir:*)",
       "Bash(wc:*)",
-      "Bash(dotnet restore:*)"
+      "Bash(dotnet restore:*)",
+      "Bash(git check-ignore:*)"
     ]
   }
 }

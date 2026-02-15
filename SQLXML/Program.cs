@@ -1,9 +1,16 @@
 using System.Xml.Linq;
+using Microsoft.Extensions.Configuration;
 using SQLXML.Generation;
 using SQLXML.MetaData;
 using SQLXML.Models;
 using SQLXML.Parsing;
 using SQLXML.Processing;
+
+var configuration = new ConfigurationBuilder()
+    .SetBasePath(AppContext.BaseDirectory)
+    .AddJsonFile("appsettings.json", optional: true)
+    .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? "Production"}.json", optional: true)
+    .Build();
 
 if (args.Length < 1)
 {
@@ -34,6 +41,8 @@ if (command == "schema")
                 break;
         }
     }
+
+    metadataConnectionString ??= configuration.GetConnectionString("MetadataConnection");
 
     if (xsdPath == null)
     {
@@ -172,6 +181,9 @@ if (command == "process")
                 break;
         }
     }
+
+    connectionString ??= configuration.GetConnectionString("DefaultConnection");
+    metadataConnectionString ??= configuration.GetConnectionString("MetadataConnection");
 
     if (xsdPath == null || inputFolder == null || connectionString == null)
     {
