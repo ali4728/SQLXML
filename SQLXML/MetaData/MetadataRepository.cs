@@ -234,83 +234,7 @@ public class MetadataRepository : IDisposable
         return Convert.ToInt64(cmd.ExecuteScalar());
     }
 
-    // ── 5) Apply Run ────────────────────────────────────────────────
-
-    public long InsertApplyRun(
-        long schemaSetId,
-        long? generationRunId,
-        string targetDatabaseName,
-        string? targetServerName = null,
-        string? appliedBy = null)
-    {
-        const string sql = """
-            INSERT INTO dbo.SQLXML_SqlApplyRun
-                (SchemaSetId, GenerationRunId, TargetDatabaseName, TargetServerName, AppliedBy)
-            VALUES
-                (@SetId, @RunId, @Db, @Server, @By);
-            SELECT SCOPE_IDENTITY();
-            """;
-
-        using var cmd = new SqlCommand(sql, _conn, _tx);
-        cmd.Parameters.AddWithValue("@SetId", schemaSetId);
-        cmd.Parameters.AddWithValue("@RunId", (object?)generationRunId ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@Db", targetDatabaseName);
-        cmd.Parameters.AddWithValue("@Server", (object?)targetServerName ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@By", (object?)appliedBy ?? DBNull.Value);
-        return Convert.ToInt64(cmd.ExecuteScalar());
-    }
-
-    public void CompleteApplyRun(long applyRunId, string status, string? message = null)
-    {
-        const string sql = """
-            UPDATE dbo.SQLXML_SqlApplyRun
-            SET FinishedUtc = SYSUTCDATETIME(),
-                Status      = @Status,
-                Message     = @Msg
-            WHERE ApplyRunId = @Id
-            """;
-
-        using var cmd = new SqlCommand(sql, _conn, _tx);
-        cmd.Parameters.AddWithValue("@Id", applyRunId);
-        cmd.Parameters.AddWithValue("@Status", status);
-        cmd.Parameters.AddWithValue("@Msg", (object?)message ?? DBNull.Value);
-        cmd.ExecuteNonQuery();
-    }
-
-    public long InsertApplyRunDetail(long applyRunId, long scriptId)
-    {
-        const string sql = """
-            INSERT INTO dbo.SQLXML_SqlApplyRunDetail (ApplyRunId, ScriptId)
-            VALUES (@RunId, @ScriptId);
-            SELECT SCOPE_IDENTITY();
-            """;
-
-        using var cmd = new SqlCommand(sql, _conn, _tx);
-        cmd.Parameters.AddWithValue("@RunId", applyRunId);
-        cmd.Parameters.AddWithValue("@ScriptId", scriptId);
-        return Convert.ToInt64(cmd.ExecuteScalar());
-    }
-
-    public void CompleteApplyRunDetail(long detailId, string status, int? errorNumber = null, string? errorMessage = null)
-    {
-        const string sql = """
-            UPDATE dbo.SQLXML_SqlApplyRunDetail
-            SET FinishedUtc   = SYSUTCDATETIME(),
-                Status        = @Status,
-                ErrorNumber   = @ErrNo,
-                ErrorMessage  = @ErrMsg
-            WHERE ApplyRunDetailId = @Id
-            """;
-
-        using var cmd = new SqlCommand(sql, _conn, _tx);
-        cmd.Parameters.AddWithValue("@Id", detailId);
-        cmd.Parameters.AddWithValue("@Status", status);
-        cmd.Parameters.AddWithValue("@ErrNo", (object?)errorNumber ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@ErrMsg", (object?)errorMessage ?? DBNull.Value);
-        cmd.ExecuteNonQuery();
-    }
-
-    // ── 6) XML Load Run ─────────────────────────────────────────────
+    // ── 5) XML Load Run ─────────────────────────────────────────────
 
     public long InsertXmlLoadRun(
         long schemaSetId,
@@ -413,24 +337,22 @@ public class MetadataRepository : IDisposable
         string errorMessage,
         long? schemaSetId = null,
         long? generationRunId = null,
-        long? applyRunId = null,
         long? loadRunId = null,
         int? errorNumber = null,
         string? contextJson = null)
     {
         const string sql = """
             INSERT INTO dbo.SQLXML_PipelineErrorLog
-                (Area, SchemaSetId, GenerationRunId, ApplyRunId, LoadRunId,
+                (Area, SchemaSetId, GenerationRunId, LoadRunId,
                  ErrorNumber, ErrorMessage, ContextJson)
             VALUES
-                (@Area, @SetId, @GenId, @ApplyId, @LoadId, @ErrNo, @ErrMsg, @Ctx)
+                (@Area, @SetId, @GenId, @LoadId, @ErrNo, @ErrMsg, @Ctx)
             """;
 
         using var cmd = new SqlCommand(sql, _conn, _tx);
         cmd.Parameters.AddWithValue("@Area", area);
         cmd.Parameters.AddWithValue("@SetId", (object?)schemaSetId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@GenId", (object?)generationRunId ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@ApplyId", (object?)applyRunId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@LoadId", (object?)loadRunId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@ErrNo", (object?)errorNumber ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@ErrMsg", errorMessage);

@@ -3,7 +3,7 @@
    - Tracks XSD schema sets (one "main" XSD + dependent/includes/imports)
    - Stores generated CREATE TABLE scripts
    - Stores execution "runs" (versioning / auditing)
-   - Logs apply/load events + errors
+   - Logs XML load events + errors
 
    Drop order respects foreign-key dependencies (children first).
    ============================================================ */
@@ -14,10 +14,6 @@ GO
 IF OBJECT_ID('dbo.SQLXML_XmlLoadRunTableLog',     'U') IS NOT NULL DROP TABLE dbo.SQLXML_XmlLoadRunTableLog;
 GO
 IF OBJECT_ID('dbo.SQLXML_XmlLoadRun',             'U') IS NOT NULL DROP TABLE dbo.SQLXML_XmlLoadRun;
-GO
-IF OBJECT_ID('dbo.SQLXML_SqlApplyRunDetail',       'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlApplyRunDetail;
-GO
-IF OBJECT_ID('dbo.SQLXML_SqlApplyRun',             'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlApplyRun;
 GO
 IF OBJECT_ID('dbo.SQLXML_SqlGeneratedScript',      'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlGeneratedScript;
 GO
@@ -51,8 +47,6 @@ CREATE TABLE dbo.SQLXML_XsdSchemaSet
     CombinedSha256       CHAR(64) NULL,            -- hash of canonicalized/concatenated content if you do that
     CreatedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_XsdSchemaSet_CreatedUtc DEFAULT (SYSUTCDATETIME()),
     CreatedBy            NVARCHAR(128) NULL,
-    Notes                NVARCHAR(2000) NULL,
-
     CONSTRAINT UQ_SQLXML_XsdSchemaSet_KeyVersion UNIQUE (SchemaSetKey, VersionLabel)
 );
 GO
@@ -71,10 +65,8 @@ CREATE TABLE dbo.SQLXML_XsdSchemaFile
     FileName             NVARCHAR(260) NOT NULL,
     FilePathOrUri        NVARCHAR(1000) NULL,      -- where it came from (disk path, blob uri, etc.)
     TargetNamespace      NVARCHAR(500) NULL,
-    LocationHint         NVARCHAR(1000) NULL,      -- schemaLocation/include path seen in XSD (optional)
 
     ContentXml           XML NULL,                 -- if you store raw XML
-    ContentText          NVARCHAR(MAX) NULL,       -- or store text (pick one; you can keep both in draft)
     FileSha256           CHAR(64) NULL,
 
     ImportedUtc          DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_XsdSchemaFile_ImportedUtc DEFAULT (SYSUTCDATETIME()),
@@ -144,50 +136,6 @@ CREATE INDEX IX_SQLXML_SqlGeneratedScript_Target ON dbo.SQLXML_SqlGeneratedScrip
 GO
 
 
-/* =========================
-   5) Apply Scripts to a Database (DDL apply/audit)
-   One row per apply attempt.
-   ========================= */
-
-CREATE TABLE dbo.SQLXML_SqlApplyRun
-(
-    ApplyRunId           BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_SqlApplyRun PRIMARY KEY,
-    SchemaSetId          BIGINT NOT NULL CONSTRAINT FK_SQLXML_SqlApplyRun_SchemaSet
-                         REFERENCES dbo.SQLXML_XsdSchemaSet(SchemaSetId),
-    GenerationRunId      BIGINT NULL CONSTRAINT FK_SQLXML_SqlApplyRun_GenerationRun
-                         REFERENCES dbo.SQLXML_XsdGenerationRun(GenerationRunId),
-
-    TargetDatabaseName   SYSNAME NOT NULL,
-    TargetServerName     NVARCHAR(200) NULL,       -- optional
-    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_SqlApplyRun_StartedUtc DEFAULT (SYSUTCDATETIME()),
-    FinishedUtc          DATETIME2(3) NULL,
-    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_SQLXML_SqlApplyRun_Status DEFAULT ('Running'),
-
-    AppliedBy            NVARCHAR(128) NULL,
-    Message              NVARCHAR(2000) NULL
-);
-GO
-
-/* Detail rows: which scripts were applied, and outcomes */
-CREATE TABLE dbo.SQLXML_SqlApplyRunDetail
-(
-    ApplyRunDetailId     BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_SqlApplyRunDetail PRIMARY KEY,
-    ApplyRunId           BIGINT NOT NULL CONSTRAINT FK_SQLXML_SqlApplyRunDetail_ApplyRun
-                         REFERENCES dbo.SQLXML_SqlApplyRun(ApplyRunId),
-    ScriptId             BIGINT NOT NULL CONSTRAINT FK_SQLXML_SqlApplyRunDetail_Script
-                         REFERENCES dbo.SQLXML_SqlGeneratedScript(ScriptId),
-
-    StartedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_SqlApplyRunDetail_StartedUtc DEFAULT (SYSUTCDATETIME()),
-    FinishedUtc          DATETIME2(3) NULL,
-    Status               NVARCHAR(20) NOT NULL CONSTRAINT DF_SQLXML_SqlApplyRunDetail_Status DEFAULT ('Running'),
-    ErrorNumber          INT NULL,
-    ErrorMessage         NVARCHAR(4000) NULL
-);
-GO
-
-CREATE INDEX IX_SQLXML_SqlApplyRunDetail_ApplyRun ON dbo.SQLXML_SqlApplyRunDetail(ApplyRunId, Status);
-GO
-
 
 /* =========================
    6) XML Load Runs (optional but usually needed)
@@ -251,7 +199,6 @@ CREATE TABLE dbo.SQLXML_PipelineErrorLog
     Area                 NVARCHAR(50) NOT NULL,     -- 'Generate' | 'Apply' | 'Load'
     SchemaSetId          BIGINT NULL,
     GenerationRunId      BIGINT NULL,
-    ApplyRunId           BIGINT NULL,
     LoadRunId            BIGINT NULL,
 
     ErrorNumber          INT NULL,
