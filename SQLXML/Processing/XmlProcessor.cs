@@ -41,6 +41,18 @@ public class XmlProcessor
         var rootTable = _tables.First(t => t.ParentTableName == null && t.ForeignKeys.Count == 0);
         var messageRow = new RowData { TableName = rootTable.TableName };
 
+        // Extract root element's own column values (e.g. attributes, simple child elements)
+        if (_tablesByName.TryGetValue(rootTable.TableName, out var rootTableDef))
+        {
+            foreach (var col in rootTableDef.Columns)
+            {
+                if (col.XmlPath.Count == 0) continue;
+                var value = NavigateXmlPath(root, col.XmlPath);
+                if (value != null)
+                    messageRow.Values[col.ColumnName] = value;
+            }
+        }
+
         // Get all direct children of the root element
         var xmlChildren = root.Elements().ToList();
         int idx = 0;
@@ -198,7 +210,16 @@ public class XmlProcessor
             if (current == null) return null;
         }
 
-        var leaf = current.Elements().FirstOrDefault(e => e.Name.LocalName == path[^1]);
+        var lastSegment = path[^1];
+
+        // Handle XML attributes (paths starting with "@")
+        if (lastSegment.StartsWith("@"))
+        {
+            var attrName = lastSegment.Substring(1);
+            return current.Attribute(attrName)?.Value;
+        }
+
+        var leaf = current.Elements().FirstOrDefault(e => e.Name.LocalName == lastSegment);
         return leaf?.Value;
     }
 }
