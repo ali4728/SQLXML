@@ -246,10 +246,44 @@ public class XsdParser
                 var colName = $"{prefix}_{elName}";
                 var childXmlPath = new List<string>(xmlPath) { elName };
 
+                var isRepeating = IsRepeating(el);
                 var elComplexType = GetComplexType(resolvedEl);
-                if (elComplexType != null)
+
+                if (isRepeating)
                 {
-                    // Recurse to flatten nested complex type
+                    // Repeating element inside a flattened scope — must create a child table
+                    var childTable = CreateChildTable(elName, table.TableName, isRepeating: true);
+                    childTable.XmlElementName = elName;
+                    childTable.ParentTableName = table.TableName;
+                    childTable.ParentXmlFieldName = elName;
+
+                    if (elComplexType != null)
+                    {
+                        ProcessComplexTypeChildren(elComplexType, resolvedEl, childTable);
+                    }
+                    else
+                    {
+                        var elTypeAttr = resolvedEl.Attribute("type")?.Value;
+                        var sqlType = elTypeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(elTypeAttr)) : "NVARCHAR(MAX)";
+                        childTable.Columns.Add(new ColumnDefinition
+                        {
+                            ColumnName = "Value",
+                            SqlType = sqlType,
+                            IsNullable = true,
+                            XmlPath = childXmlPath
+                        });
+                    }
+
+                    _messageStructure.Slots.Add(new MessageSlot
+                    {
+                        XmlElementName = elName,
+                        TableName = elName,
+                        IsRepeating = true
+                    });
+                }
+                else if (elComplexType != null)
+                {
+                    // Singleton complex type — continue flattening
                     FlattenComplexType(elComplexType, resolvedEl, table, colName, childXmlPath);
                 }
                 else
