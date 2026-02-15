@@ -35,9 +35,6 @@ public class XmlProcessor
         if (root == null)
             throw new InvalidOperationException("XML document has no root element.");
 
-        // Create root message row (no data columns)
-        //var messageRow = new RowData { TableName = "ADT_A01_26_GLO_DEF" };
-
         var rootTable = _tables.First(t => t.ParentTableName == null && t.ForeignKeys.Count == 0);
         var messageRow = new RowData { TableName = rootTable.TableName };
 
@@ -59,6 +56,10 @@ public class XmlProcessor
 
         foreach (var slot in _structure.Slots)
         {
+            // Skip XML children that don't match any slot (simple columns already extracted above)
+            while (idx < xmlChildren.Count && xmlChildren[idx].Name.LocalName != slot.XmlElementName)
+                idx++;
+
             if (slot.IsGroup)
             {
                 ConsumeGroupInstances(xmlChildren, ref idx, slot, messageRow);
@@ -169,30 +170,29 @@ public class XmlProcessor
                 var fieldName = childTableDef.ParentXmlFieldName;
                 if (fieldName == null) continue;
 
+                // Navigate through XmlContainerPath to find the right parent element
+                var searchRoot = segElement;
+                if (childTableDef.XmlContainerPath.Count > 0)
+                {
+                    foreach (var containerName in childTableDef.XmlContainerPath)
+                    {
+                        searchRoot = searchRoot.Elements()
+                            .FirstOrDefault(e => e.Name.LocalName == containerName);
+                        if (searchRoot == null) break;
+                    }
+                    if (searchRoot == null) continue;
+                }
+
                 // Find all repeating elements matching this field name
-                var repeatingElements = segElement.Elements()
+                var repeatingElements = searchRoot.Elements()
                     .Where(e => e.Name.LocalName == fieldName)
                     .ToList();
 
                 for (int i = 0; i < repeatingElements.Count; i++)
                 {
-                    var childRow = new RowData
-                    {
-                        TableName = childTableDef.TableName,
-                        RepeatIndex = i
-                    };
-
-                    foreach (var col in childTableDef.Columns)
-                    {
-                        if (col.XmlPath.Count == 0) continue;
-
-                        var value = NavigateXmlPath(repeatingElements[i], col.XmlPath);
-                        if (value != null)
-                        {
-                            childRow.Values[col.ColumnName] = value;
-                        }
-                    }
-
+                    // Recursively extract the child row (so its own children are also processed)
+                    var childRow = ExtractSegmentRow(repeatingElements[i], childTableDef.TableName);
+                    childRow.RepeatIndex = i;
                     row.ChildRows.Add(childRow);
                 }
             }

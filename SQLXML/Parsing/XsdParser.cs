@@ -233,8 +233,9 @@ public class XsdParser
         }
     }
 
-    private void FlattenComplexType(XElement complexType, XElement contextElement, TableDefinition table, string prefix, List<string> xmlPath)
+    private void FlattenComplexType(XElement complexType, XElement contextElement, TableDefinition table, string prefix, List<string> xmlPath, List<string>? containerPath = null)
     {
+        var currentContainerPath = containerPath ?? new List<string>();
         var seq = complexType.Element(Xs + "sequence");
         if (seq != null)
         {
@@ -256,6 +257,7 @@ public class XsdParser
                     childTable.XmlElementName = elName;
                     childTable.ParentTableName = table.TableName;
                     childTable.ParentXmlFieldName = elName;
+                    childTable.XmlContainerPath = new List<string>(currentContainerPath);
 
                     if (elComplexType != null)
                     {
@@ -283,8 +285,9 @@ public class XsdParser
                 }
                 else if (elComplexType != null)
                 {
-                    // Singleton complex type — continue flattening
-                    FlattenComplexType(elComplexType, resolvedEl, table, colName, childXmlPath);
+                    // Singleton complex type — continue flattening, tracking the container path
+                    var nestedContainerPath = new List<string>(currentContainerPath) { elName };
+                    FlattenComplexType(elComplexType, resolvedEl, table, colName, childXmlPath, nestedContainerPath);
                 }
                 else
                 {

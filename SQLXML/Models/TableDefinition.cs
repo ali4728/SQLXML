@@ -9,6 +9,13 @@ public class TableDefinition
     public string XmlElementName { get; set; } = string.Empty;
     public string? ParentTableName { get; set; }
     public string? ParentXmlFieldName { get; set; }
+
+    /// <summary>
+    /// Path from the parent segment element down to the container of repeating child elements.
+    /// E.g. for Encounter under Transaction/Encounters/Encounter, this would be ["Encounters"].
+    /// Empty list means the child is a direct child of the parent element.
+    /// </summary>
+    public List<string> XmlContainerPath { get; set; } = new();
 }
 
 public class ColumnDefinition
