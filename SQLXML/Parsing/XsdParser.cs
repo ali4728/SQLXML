@@ -47,7 +47,7 @@ public class XsdParser
         var complexType = GetComplexType(rootElement);
         if (complexType != null)
         {
-            ProcessComplexTypeChildren(complexType, rootElement, rootTable);
+            ProcessComplexTypeChildren(complexType, rootElement, rootTable, createTablesForSingletons: true);
         }
 
         // Handle column overflow on all tables
@@ -77,13 +77,13 @@ public class XsdParser
         return null;
     }
 
-    private void ProcessComplexTypeChildren(XElement complexType, XElement contextElement, TableDefinition currentTable)
+    private void ProcessComplexTypeChildren(XElement complexType, XElement contextElement, TableDefinition currentTable, bool createTablesForSingletons = false)
     {
         // Handle xs:sequence
         var sequence = complexType.Element(Xs + "sequence");
         if (sequence != null)
         {
-            ProcessSequenceChildren(sequence, contextElement, currentTable);
+            ProcessSequenceChildren(sequence, contextElement, currentTable, createTablesForSingletons);
         }
 
         // Handle xs:attribute elements
@@ -105,7 +105,7 @@ public class XsdParser
         }
     }
 
-    private void ProcessSequenceChildren(XElement sequence, XElement contextElement, TableDefinition parentTable)
+    private void ProcessSequenceChildren(XElement sequence, XElement contextElement, TableDefinition parentTable, bool createTablesForSingletons = false)
     {
         // First pass: count duplicate element names for disambiguation
         var nameCountMap = new Dictionary<string, int>();
@@ -178,8 +178,27 @@ public class XsdParser
                 }
                 else if (complexType != null)
                 {
-                    // FLATTEN singleton complex type into parent table
-                    FlattenComplexType(complexType, child, parentTable, name, new List<string> { name });
+                    if (createTablesForSingletons)
+                    {
+                        // Create 1:1 child table for singleton segment
+                        var childTable = CreateChildTable(tableName, parentTable.TableName, isRepeating: false);
+                        childTable.XmlElementName = name;
+                        childTable.ParentTableName = parentTable.TableName;
+                        childTable.ParentXmlFieldName = name;
+                        ProcessComplexTypeChildren(complexType, child, childTable);
+
+                        _messageStructure.Slots.Add(new MessageSlot
+                        {
+                            XmlElementName = name,
+                            TableName = tableName,
+                            IsRepeating = false
+                        });
+                    }
+                    else
+                    {
+                        // FLATTEN singleton complex type into parent table
+                        FlattenComplexType(complexType, child, parentTable, name, new List<string> { name });
+                    }
                 }
                 else
                 {
@@ -335,31 +354,6 @@ public class XsdParser
         {
             if (table.Columns.Count <= MaxColumnsPerTable) continue;
 
-            // Create extension table for overflow columns
-            var extTableName = $"{table.TableName}_Ext";
-            var extTable = new TableDefinition
-            {
-                TableName = extTableName,
-                SortOrder = _sortOrder++
-            };
-
-            // PK + FK to parent
-            extTable.Columns.Add(new ColumnDefinition
-            {
-                ColumnName = "Id",
-                SqlType = "BIGINT",
-                IsIdentity = false,
-                IsPrimaryKey = true,
-                IsNullable = false
-            });
-            extTable.ForeignKeys.Add(new ForeignKeyDefinition
-            {
-                ConstraintName = $"FK_{extTableName}_{table.TableName}",
-                ColumnName = "Id",
-                ReferencedTable = table.TableName,
-                ReferencedColumn = "Id"
-            });
-
             // Move overflow columns (keep system columns: Id, FKs, RepeatIndex)
             var systemColCount = table.Columns.Count(c => c.IsPrimaryKey || c.ColumnName == "RepeatIndex"
                 || table.ForeignKeys.Any(fk => fk.ColumnName == c.ColumnName));
@@ -369,13 +363,57 @@ public class XsdParser
             var keepCount = MaxColumnsPerTable - systemColCount;
             var overflowColumns = dataColumns.Skip(keepCount).ToList();
 
+            // Remove all overflow columns from the original table
             foreach (var col in overflowColumns)
             {
                 table.Columns.Remove(col);
-                extTable.Columns.Add(col);
             }
 
-            tablesToAdd.Add(extTable);
+            // Split overflow into chunks that each fit within the column limit
+            // Each extension table has 1 system column (Id)
+            var extMaxDataColumns = MaxColumnsPerTable - 1;
+            var chunks = new List<List<ColumnDefinition>>();
+            for (int i = 0; i < overflowColumns.Count; i += extMaxDataColumns)
+            {
+                chunks.Add(overflowColumns.Skip(i).Take(extMaxDataColumns).ToList());
+            }
+
+            var parentTableName = table.TableName;
+            for (int c = 0; c < chunks.Count; c++)
+            {
+                var suffix = c == 0 ? "_Ext" : $"_Ext{c + 1}";
+                var extTableName = $"{parentTableName}{suffix}";
+
+                var extTable = new TableDefinition
+                {
+                    TableName = extTableName,
+                    SortOrder = _sortOrder++
+                };
+
+                // PK + FK to original table
+                extTable.Columns.Add(new ColumnDefinition
+                {
+                    ColumnName = "Id",
+                    SqlType = "BIGINT",
+                    IsIdentity = false,
+                    IsPrimaryKey = true,
+                    IsNullable = false
+                });
+                extTable.ForeignKeys.Add(new ForeignKeyDefinition
+                {
+                    ConstraintName = $"FK_{extTableName}_{parentTableName}",
+                    ColumnName = "Id",
+                    ReferencedTable = parentTableName,
+                    ReferencedColumn = "Id"
+                });
+
+                foreach (var col in chunks[c])
+                {
+                    extTable.Columns.Add(col);
+                }
+
+                tablesToAdd.Add(extTable);
+            }
         }
 
         _tables.AddRange(tablesToAdd);
