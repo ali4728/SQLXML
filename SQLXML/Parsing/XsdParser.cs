@@ -98,7 +98,7 @@ public class XsdParser
 
             currentTable.Columns.Add(new ColumnDefinition
             {
-                ColumnName = attrName,
+                ColumnName = UniqueColumnName(currentTable, attrName),
                 SqlType = sqlType,
                 IsNullable = attr.Attribute("use")?.Value != "required",
                 XmlPath = new List<string> { "@" + attrName }
@@ -208,7 +208,7 @@ public class XsdParser
                     var sqlType = typeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(typeAttr)) : "NVARCHAR(MAX)";
                     parentTable.Columns.Add(new ColumnDefinition
                     {
-                        ColumnName = name,
+                        ColumnName = UniqueColumnName(parentTable, name),
                         SqlType = sqlType,
                         IsNullable = true,
                         XmlPath = new List<string> { name }
@@ -292,7 +292,7 @@ public class XsdParser
                     var sqlType = elTypeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(elTypeAttr)) : "NVARCHAR(MAX)";
                     table.Columns.Add(new ColumnDefinition
                     {
-                        ColumnName = colName,
+                        ColumnName = UniqueColumnName(table, colName),
                         SqlType = sqlType,
                         IsNullable = true,
                         XmlPath = childXmlPath
@@ -313,7 +313,7 @@ public class XsdParser
 
             table.Columns.Add(new ColumnDefinition
             {
-                ColumnName = colName,
+                ColumnName = UniqueColumnName(table, colName),
                 SqlType = sqlType,
                 IsNullable = attr.Attribute("use")?.Value != "required",
                 XmlPath = new List<string>(xmlPath) { "@" + attrName }
@@ -678,6 +678,27 @@ public class XsdParser
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Returns a column name that is unique within the table. If the desired name
+    /// collides with an existing column (e.g. a system PK or FK column), appends
+    /// "_Value", then "_2", "_3", etc.
+    /// </summary>
+    private static string UniqueColumnName(TableDefinition table, string desired)
+    {
+        var existing = new HashSet<string>(table.Columns.Select(c => c.ColumnName), StringComparer.OrdinalIgnoreCase);
+        if (!existing.Contains(desired)) return desired;
+
+        // First attempt: append _Value (semantic hint that this is the XML value)
+        var candidate = desired + "_Value";
+        if (!existing.Contains(candidate)) return candidate;
+
+        // Fallback: numeric suffix
+        var suffix = 2;
+        while (existing.Contains($"{desired}_{suffix}"))
+            suffix++;
+        return $"{desired}_{suffix}";
     }
 
     private string ResolveNamespace(string typeRef, XElement context)
