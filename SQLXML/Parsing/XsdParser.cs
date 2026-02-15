@@ -53,6 +53,9 @@ public class XsdParser
         // Handle column overflow on all tables
         HandleColumnOverflow();
 
+        // Shorten column names that exceed SQL Server's 128-char identifier limit
+        ShortenLongIdentifiers();
+
         return (_tables, _messageStructure);
     }
 
@@ -376,6 +379,104 @@ public class XsdParser
         }
 
         _tables.AddRange(tablesToAdd);
+    }
+
+    // Abbreviations ordered by descending length savings for maximum shortening efficiency
+    private static readonly (string Long, string Short)[] _abbreviations =
+    [
+        ("Identification", "Id"),
+        ("Representation", "Rep"),
+        ("Authentication", "Auth"),
+        ("Administration", "Admin"),
+        ("Administrative", "Admin"),
+        ("Communication", "Comm"),
+        ("Certification", "Cert"),
+        ("Authorization", "Authz"),
+        ("Organization", "Org"),
+        ("Professional", "Prof"),
+        ("Jurisdiction", "Jur"),
+        ("Observation", "Obs"),
+        ("Demographic", "Demo"),
+        ("Information", "Info"),
+        ("Instructions", "Instr"),
+        ("Description", "Desc"),
+        ("Restriction", "Restr"),
+        ("Credential", "Cred"),
+        ("Department", "Dept"),
+        ("Additional", "Addl"),
+        ("Expiration", "Exp"),
+        ("Insurance", "Ins"),
+        ("Namespace", "Ns"),
+        ("Alternate", "Alt"),
+        ("Effective", "Eff"),
+        ("Assigning", "Asgn"),
+        ("Universal", "Univ"),
+        ("Facility", "Fac"),
+        ("Provider", "Prov"),
+        ("Patient", "Pat"),
+        ("Version", "Ver"),
+        ("Primary", "Prim"),
+    ];
+
+    private const int MaxIdentifierLength = 128;
+
+    private void ShortenLongIdentifiers()
+    {
+        foreach (var table in _tables)
+        {
+            var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var col in table.Columns)
+                usedNames.Add(col.ColumnName);
+
+            foreach (var col in table.Columns)
+            {
+                if (col.ColumnName.Length <= MaxIdentifierLength) continue;
+
+                usedNames.Remove(col.ColumnName);
+                var shortened = ShortenName(col.ColumnName, MaxIdentifierLength);
+
+                // Ensure uniqueness within the table
+                var finalName = shortened;
+                var suffix = 2;
+                while (usedNames.Contains(finalName))
+                {
+                    var sfx = $"_{suffix}";
+                    finalName = shortened[..Math.Min(shortened.Length, MaxIdentifierLength - sfx.Length)] + sfx;
+                    suffix++;
+                }
+
+                col.ColumnName = finalName;
+                usedNames.Add(finalName);
+            }
+        }
+    }
+
+    private static string ShortenName(string name, int maxLength)
+    {
+        // Apply abbreviations progressively until within limit
+        var result = name;
+        foreach (var (longForm, shortForm) in _abbreviations)
+        {
+            if (result.Length <= maxLength) break;
+            result = result.Replace(longForm, shortForm);
+        }
+
+        if (result.Length <= maxLength) return result;
+
+        // Still too long — truncate and append a stable hash for uniqueness
+        var hash = GetStableShortHash(name);
+        return result[..(maxLength - 9)] + "_" + hash;
+    }
+
+    private static string GetStableShortHash(string input)
+    {
+        unchecked
+        {
+            uint h = 2166136261;
+            foreach (var c in input)
+                h = (h ^ c) * 16777619;
+            return h.ToString("x8");
+        }
     }
 
     private void LoadXsdChain(string rootPath)
