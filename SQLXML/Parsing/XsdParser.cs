@@ -114,9 +114,9 @@ public class XsdParser
         {
             if (child.Name == Xs + "element")
             {
-                var name = child.Attribute("name")?.Value ?? "Unknown";
-                nameCountMap.TryGetValue(name, out int count);
-                nameCountMap[name] = count + 1;
+                var (_, resolvedName) = ResolveElement(child);
+                nameCountMap.TryGetValue(resolvedName, out int count);
+                nameCountMap[resolvedName] = count + 1;
             }
         }
 
@@ -129,9 +129,9 @@ public class XsdParser
         {
             if (child.Name == Xs + "element")
             {
-                var name = child.Attribute("name")?.Value ?? "Unknown";
+                var (resolvedChild, name) = ResolveElement(child);
                 var isRepeating = IsRepeating(child);
-                var complexType = GetComplexType(child);
+                var complexType = GetComplexType(resolvedChild);
 
                 // Resolve table name (handle duplicates like ARV×2 in HL7)
                 nameIndexMap.TryGetValue(name, out int idx);
@@ -153,12 +153,12 @@ public class XsdParser
 
                     if (complexType != null)
                     {
-                        ProcessComplexTypeChildren(complexType, child, childTable);
+                        ProcessComplexTypeChildren(complexType, resolvedChild, childTable);
                     }
                     else
                     {
                         // Simple repeating element - add a Value column
-                        var typeAttr = child.Attribute("type")?.Value;
+                        var typeAttr = resolvedChild.Attribute("type")?.Value;
                         var sqlType = typeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(typeAttr)) : "NVARCHAR(MAX)";
                         childTable.Columns.Add(new ColumnDefinition
                         {
@@ -186,7 +186,7 @@ public class XsdParser
                         childTable.XmlElementName = name;
                         childTable.ParentTableName = parentTable.TableName;
                         childTable.ParentXmlFieldName = name;
-                        ProcessComplexTypeChildren(complexType, child, childTable);
+                        ProcessComplexTypeChildren(complexType, resolvedChild, childTable);
 
                         _messageStructure.Slots.Add(new MessageSlot
                         {
@@ -198,13 +198,13 @@ public class XsdParser
                     else
                     {
                         // FLATTEN singleton complex type into parent table
-                        FlattenComplexType(complexType, child, parentTable, name, new List<string> { name });
+                        FlattenComplexType(complexType, resolvedChild, parentTable, name, new List<string> { name });
                     }
                 }
                 else
                 {
                     // SIMPLE COLUMN
-                    var typeAttr = child.Attribute("type")?.Value;
+                    var typeAttr = resolvedChild.Attribute("type")?.Value;
                     var sqlType = typeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(typeAttr)) : "NVARCHAR(MAX)";
                     parentTable.Columns.Add(new ColumnDefinition
                     {
@@ -240,21 +240,21 @@ public class XsdParser
         {
             foreach (var el in seq.Elements(Xs + "element"))
             {
-                var elName = el.Attribute("name")?.Value;
-                if (elName == null) continue;
+                var (resolvedEl, elName) = ResolveElement(el);
+                if (elName == "Unknown") continue;
 
                 var colName = $"{prefix}_{elName}";
                 var childXmlPath = new List<string>(xmlPath) { elName };
 
-                var elComplexType = GetComplexType(el);
+                var elComplexType = GetComplexType(resolvedEl);
                 if (elComplexType != null)
                 {
                     // Recurse to flatten nested complex type
-                    FlattenComplexType(elComplexType, el, table, colName, childXmlPath);
+                    FlattenComplexType(elComplexType, resolvedEl, table, colName, childXmlPath);
                 }
                 else
                 {
-                    var elTypeAttr = el.Attribute("type")?.Value;
+                    var elTypeAttr = resolvedEl.Attribute("type")?.Value;
                     var sqlType = elTypeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(elTypeAttr)) : "NVARCHAR(MAX)";
                     table.Columns.Add(new ColumnDefinition
                     {
@@ -294,16 +294,16 @@ public class XsdParser
 
         // Lead segment gets parent FK
         var leadElement = elements[0];
-        var leadName = leadElement.Attribute("name")?.Value ?? "Unknown";
+        var (resolvedLead, leadName) = ResolveElement(leadElement);
         var leadIsRepeating = true; // Groups themselves are unbounded
 
         var leadTable = CreateChildTable(leadName, parentTableName, leadIsRepeating);
         leadTable.XmlElementName = leadName;
 
-        var leadComplexType = GetComplexType(leadElement);
+        var leadComplexType = GetComplexType(resolvedLead);
         if (leadComplexType != null)
         {
-            ProcessComplexTypeChildren(leadComplexType, leadElement, leadTable);
+            ProcessComplexTypeChildren(leadComplexType, resolvedLead, leadTable);
         }
 
         var groupSlot = new MessageSlot
@@ -319,7 +319,7 @@ public class XsdParser
         for (int i = 1; i < elements.Count; i++)
         {
             var childElement = elements[i];
-            var childName = childElement.Attribute("name")?.Value ?? "Unknown";
+            var (resolvedGroupChild, childName) = ResolveElement(childElement);
             var childIsRepeating = IsRepeating(childElement);
 
             // Only prefix with lead name if the name collides with a used name
@@ -330,10 +330,10 @@ public class XsdParser
             var childTable = CreateGroupChildTable(childTableName, parentTableName, leadTable.TableName, childIsRepeating);
             childTable.XmlElementName = childName;
 
-            var childComplexType = GetComplexType(childElement);
+            var childComplexType = GetComplexType(resolvedGroupChild);
             if (childComplexType != null)
             {
-                ProcessComplexTypeChildren(childComplexType, childElement, childTable);
+                ProcessComplexTypeChildren(childComplexType, resolvedGroupChild, childTable);
             }
 
             groupSlot.GroupChildren.Add(new MessageSlot
@@ -590,6 +590,42 @@ public class XsdParser
                     _types[(ns, name)] = st;
             }
         }
+    }
+
+    /// <summary>
+    /// Resolves an xs:element with a ref="..." attribute to the actual top-level element definition.
+    /// </summary>
+    private XElement? ResolveRefElement(XElement element)
+    {
+        var refAttr = element.Attribute("ref")?.Value;
+        if (refAttr == null) return null;
+
+        var localName = StripPrefix(refAttr);
+
+        // Search all loaded documents for a top-level xs:element with this name
+        foreach (var doc in _docs.Values)
+        {
+            var resolved = doc.Descendants(Xs + "element")
+                .FirstOrDefault(e => e.Parent?.Name == Xs + "schema"
+                                  && e.Attribute("name")?.Value == localName);
+            if (resolved != null) return resolved;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Given an xs:element, returns the effective element (resolving ref if present)
+    /// and extracts the element name. The original element is still used for minOccurs/maxOccurs.
+    /// </summary>
+    private (XElement resolved, string name) ResolveElement(XElement element)
+    {
+        var refTarget = ResolveRefElement(element);
+        if (refTarget != null)
+        {
+            var name = refTarget.Attribute("name")?.Value ?? "Unknown";
+            return (refTarget, name);
+        }
+        return (element, element.Attribute("name")?.Value ?? "Unknown");
     }
 
     private XElement? ResolveTypeRef(string typeRef, XElement context)
