@@ -22,9 +22,10 @@ public class XsdParser
     private readonly List<TableDefinition> _tables = new();
     private readonly MessageStructure _messageStructure = new();
     private readonly HashSet<string> _createdTableNames = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<LoadedXsdFileInfo> _loadedFiles = new();
     private int _sortOrder;
 
-    public (List<TableDefinition> Tables, MessageStructure Structure) Parse(string rootXsdPath)
+    public (List<TableDefinition> Tables, MessageStructure Structure, List<LoadedXsdFileInfo> LoadedFiles) Parse(string rootXsdPath)
     {
         LoadXsdChain(rootXsdPath);
         BuildTypeDictionary();
@@ -56,7 +57,7 @@ public class XsdParser
         // Shorten column names that exceed SQL Server's 128-char identifier limit
         ShortenLongIdentifiers();
 
-        return (_tables, _messageStructure);
+        return (_tables, _messageStructure, _loadedFiles);
     }
 
     private XElement? GetComplexType(XElement element)
@@ -521,7 +522,9 @@ public class XsdParser
     {
         var loaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var queue = new Queue<string>();
-        queue.Enqueue(Path.GetFullPath(rootPath));
+        var rootFullPath = Path.GetFullPath(rootPath);
+        queue.Enqueue(rootFullPath);
+        bool isFirst = true;
 
         while (queue.Count > 0)
         {
@@ -531,6 +534,16 @@ public class XsdParser
             var doc = XDocument.Load(path);
             var targetNs = doc.Root?.Attribute("targetNamespace")?.Value ?? "";
             _docs[targetNs] = doc;
+
+            // Track loaded file info for metadata
+            _loadedFiles.Add(new LoadedXsdFileInfo
+            {
+                FilePath = path,
+                FileName = Path.GetFileName(path),
+                TargetNamespace = targetNs,
+                FileRole = isFirst ? "Root" : "Import"
+            });
+            isFirst = false;
 
             // Build prefix map for this document
             var prefixMap = new Dictionary<string, string>();

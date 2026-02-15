@@ -1,21 +1,37 @@
 /* ============================================================
-   XSD -> SQL Generator Metadata Store (First Draft)
-   - Tracks XSD schema sets (one “main” XSD + dependent/includes/imports)
+   XSD -> SQL Generator Metadata Store
+   - Tracks XSD schema sets (one "main" XSD + dependent/includes/imports)
    - Stores generated CREATE TABLE scripts
-   - Stores execution “runs” (versioning / auditing)
+   - Stores execution "runs" (versioning / auditing)
    - Logs apply/load events + errors
+
+   Drop order respects foreign-key dependencies (children first).
    ============================================================ */
 
--- Optional: put these in a dedicated schema
--- CREATE SCHEMA Meta AUTHORIZATION dbo;
--- GO
+-- Drop in reverse dependency order
+IF OBJECT_ID('dbo.SQLXML_PipelineErrorLog',      'U') IS NOT NULL DROP TABLE dbo.SQLXML_PipelineErrorLog;
+GO
+IF OBJECT_ID('dbo.SQLXML_XmlLoadRunTableLog',     'U') IS NOT NULL DROP TABLE dbo.SQLXML_XmlLoadRunTableLog;
+GO
+IF OBJECT_ID('dbo.SQLXML_XmlLoadRun',             'U') IS NOT NULL DROP TABLE dbo.SQLXML_XmlLoadRun;
+GO
+IF OBJECT_ID('dbo.SQLXML_SqlApplyRunDetail',       'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlApplyRunDetail;
+GO
+IF OBJECT_ID('dbo.SQLXML_SqlApplyRun',             'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlApplyRun;
+GO
+IF OBJECT_ID('dbo.SQLXML_SqlGeneratedScript',      'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlGeneratedScript;
+GO
+IF OBJECT_ID('dbo.SQLXML_XsdGenerationRun',        'U') IS NOT NULL DROP TABLE dbo.SQLXML_XsdGenerationRun;
+GO
+IF OBJECT_ID('dbo.SQLXML_XsdSchemaFile',           'U') IS NOT NULL DROP TABLE dbo.SQLXML_XsdSchemaFile;
+GO
+IF OBJECT_ID('dbo.SQLXML_XsdSchemaSet',            'U') IS NOT NULL DROP TABLE dbo.SQLXML_XsdSchemaSet;
+GO
 
 /* =========================
    1) Schema Set Registry
    ========================= */
 
-IF OBJECT_ID('dbo.SQLXML_XsdSchemaSet', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_XsdSchemaSet;
-GO
 CREATE TABLE dbo.SQLXML_XsdSchemaSet
 (
     SchemaSetId          BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_XsdSchemaSet PRIMARY KEY,
@@ -45,8 +61,6 @@ GO
    2) Individual XSD Files under a Schema Set
    ========================= */
 
-IF OBJECT_ID('dbo.SQLXML_XsdSchemaFile', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_XsdSchemaFile;
-GO
 CREATE TABLE dbo.SQLXML_XsdSchemaFile
 (
     SchemaFileId         BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_XsdSchemaFile PRIMARY KEY,
@@ -75,8 +89,7 @@ GO
    One row per “generation run” for a schema set
    ========================= */
 
-IF OBJECT_ID('dbo.SQLXML_XsdGenerationRun', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_XsdGenerationRun;
-GO
+
 CREATE TABLE dbo.SQLXML_XsdGenerationRun
 (
     GenerationRunId      BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_XsdGenerationRun PRIMARY KEY,
@@ -103,8 +116,6 @@ GO
    4) Generated SQL Scripts (CREATE TABLE, indexes, constraints, etc.)
    ========================= */
 
-IF OBJECT_ID('dbo.SQLXML_SqlGeneratedScript', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlGeneratedScript;
-GO
 CREATE TABLE dbo.SQLXML_SqlGeneratedScript
 (
     ScriptId             BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_SqlGeneratedScript PRIMARY KEY,
@@ -138,8 +149,6 @@ GO
    One row per apply attempt.
    ========================= */
 
-IF OBJECT_ID('dbo.SQLXML_SqlApplyRun', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlApplyRun;
-GO
 CREATE TABLE dbo.SQLXML_SqlApplyRun
 (
     ApplyRunId           BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_SqlApplyRun PRIMARY KEY,
@@ -160,8 +169,6 @@ CREATE TABLE dbo.SQLXML_SqlApplyRun
 GO
 
 /* Detail rows: which scripts were applied, and outcomes */
-IF OBJECT_ID('dbo.SQLXML_SqlApplyRunDetail', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_SqlApplyRunDetail;
-GO
 CREATE TABLE dbo.SQLXML_SqlApplyRunDetail
 (
     ApplyRunDetailId     BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_SqlApplyRunDetail PRIMARY KEY,
@@ -187,8 +194,6 @@ GO
    Track each inbound file/batch load using a given schema set.
    ========================= */
 
-IF OBJECT_ID('dbo.SQLXML_XmlLoadRun', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_XmlLoadRun;
-GO
 CREATE TABLE dbo.SQLXML_XmlLoadRun
 (
     LoadRunId            BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_XmlLoadRun PRIMARY KEY,
@@ -213,8 +218,6 @@ CREATE TABLE dbo.SQLXML_XmlLoadRun
 GO
 
 /* Row-level or table-level load logging (keep it table-level for sanity) */
-IF OBJECT_ID('dbo.SQLXML_XmlLoadRunTableLog', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_XmlLoadRunTableLog;
-GO
 CREATE TABLE dbo.SQLXML_XmlLoadRunTableLog
 (
     LoadRunTableLogId    BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_XmlLoadRunTableLog PRIMARY KEY,
@@ -241,8 +244,6 @@ GO
    7) Central Error Log (optional but handy)
    ========================= */
 
-IF OBJECT_ID('dbo.SQLXML_PipelineErrorLog', 'U') IS NOT NULL DROP TABLE dbo.SQLXML_PipelineErrorLog;
-GO
 CREATE TABLE dbo.SQLXML_PipelineErrorLog
 (
     ErrorLogId           BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SQLXML_PipelineErrorLog PRIMARY KEY,

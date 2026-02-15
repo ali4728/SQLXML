@@ -1,5 +1,6 @@
 using System.Xml.Linq;
 using SQLXML.Generation;
+using SQLXML.MetaData;
 using SQLXML.Models;
 using SQLXML.Parsing;
 using SQLXML.Processing;
@@ -16,6 +17,7 @@ if (command == "schema")
 {
     string? xsdPath = null;
     string? outputPath = null;
+    string? connectionString = null;
 
     for (int i = 1; i < args.Length; i++)
     {
@@ -26,6 +28,9 @@ if (command == "schema")
                 break;
             case "--output" when i + 1 < args.Length:
                 outputPath = args[++i];
+                break;
+            case "--connection-string" when i + 1 < args.Length:
+                connectionString = args[++i];
                 break;
         }
     }
@@ -44,7 +49,7 @@ if (command == "schema")
     }
 
     var parser = new XsdParser();
-    var (tables, _) = parser.Parse(xsdPath);
+    var (tables, _, loadedFiles) = parser.Parse(xsdPath);
     var sql = SqlGenerator.Generate(tables);
 
     if (outputPath != null)
@@ -56,6 +61,87 @@ if (command == "schema")
     else
     {
         Console.Write(sql);
+    }
+
+    // ── Record metadata if connection string provided ──
+    if (connectionString != null)
+    {
+        try
+        {
+            using var meta = new MetadataRepository(connectionString);
+            meta.EnsureMetadataTables();
+
+            var rootFile = loadedFiles.FirstOrDefault(f => f.FileRole == "Root");
+            var rootFileName = rootFile?.FileName ?? Path.GetFileName(xsdPath);
+            var schemaSetKey = Path.GetFileNameWithoutExtension(rootFileName);
+            var combinedSha = MetadataRepository.ComputeCombinedSha256(
+                loadedFiles.Select(f => f.FilePath));
+            var versionLabel = combinedSha[..12]; // short hash as version
+
+            // Re-use existing schema set if same content
+            var existingId = meta.FindActiveSchemaSet(schemaSetKey, versionLabel);
+            var schemaSetId = existingId ?? meta.InsertSchemaSet(
+                schemaSetKey: schemaSetKey,
+                versionLabel: versionLabel,
+                rootXsdFileName: rootFileName,
+                rootTargetNamespace: rootFile?.TargetNamespace,
+                displayName: rootFileName,
+                combinedSha256: combinedSha,
+                createdBy: Environment.UserName);
+
+            // Register individual XSD files (skip if set already existed)
+            if (existingId == null)
+            {
+                foreach (var file in loadedFiles)
+                {
+                    var sha = MetadataRepository.ComputeFileSha256(file.FilePath);
+                    meta.InsertSchemaFile(
+                        schemaSetId, file.FileRole, file.FileName,
+                        file.FilePath, file.TargetNamespace, sha,
+                        importedBy: Environment.UserName);
+                }
+            }
+
+            // Record generation run
+            var runId = meta.InsertGenerationRun(
+                schemaSetId,
+                toolName: "SQLXML",
+                toolVersion: "1.0.0");
+
+            try
+            {
+                // Record each generated CREATE TABLE as a separate script
+                int order = 0;
+                foreach (var table in tables.OrderBy(t => t.SortOrder))
+                {
+                    var tableScript = SqlGenerator.Generate(new List<TableDefinition> { table });
+                    meta.InsertGeneratedScript(
+                        schemaSetId, runId,
+                        scriptType: "CreateTable",
+                        targetSchemaName: "dbo",
+                        targetObjectName: table.TableName,
+                        targetObjectType: "TABLE",
+                        scriptText: tableScript,
+                        applyOrder: order++);
+                }
+
+                meta.CompleteGenerationRun(runId, "Completed",
+                    $"Generated {tables.Count} tables.");
+                Console.WriteLine($"Metadata recorded: SchemaSetId={schemaSetId}, GenerationRunId={runId}");
+            }
+            catch (Exception ex)
+            {
+                meta.CompleteGenerationRun(runId, "Failed", ex.Message);
+                meta.LogPipelineError("Generate", ex.Message,
+                    schemaSetId: schemaSetId, generationRunId: runId);
+                Console.Error.WriteLine($"Warning: metadata recording failed: {ex.Message}");
+            }
+        }
+        catch (Exception ex)
+        {
+            // Metadata failure should not prevent schema output
+            Console.Error.WriteLine($"Warning: could not record metadata: {ex.Message}");
+        }
     }
 
     return 0;
@@ -104,9 +190,55 @@ if (command == "process")
 
     // Parse XSD to get table definitions and message structure
     var parser = new XsdParser();
-    var (tables, structure) = parser.Parse(xsdPath);
+    var (tables, structure, loadedFiles) = parser.Parse(xsdPath);
 
     Console.WriteLine($"Parsed XSD: {tables.Count} tables, {structure.Slots.Count} message slots.");
+
+    // ── Set up metadata tracking ──
+    MetadataRepository? meta = null;
+    long schemaSetId = 0;
+    try
+    {
+        meta = new MetadataRepository(connectionString);
+        meta.EnsureMetadataTables();
+
+        var rootFile = loadedFiles.FirstOrDefault(f => f.FileRole == "Root");
+        var rootFileName = rootFile?.FileName ?? Path.GetFileName(xsdPath);
+        var schemaSetKey = Path.GetFileNameWithoutExtension(rootFileName);
+        var combinedSha = MetadataRepository.ComputeCombinedSha256(
+            loadedFiles.Select(f => f.FilePath));
+        var versionLabel = combinedSha[..12];
+
+        var existingId = meta.FindActiveSchemaSet(schemaSetKey, versionLabel);
+        schemaSetId = existingId ?? meta.InsertSchemaSet(
+            schemaSetKey: schemaSetKey,
+            versionLabel: versionLabel,
+            rootXsdFileName: rootFileName,
+            rootTargetNamespace: rootFile?.TargetNamespace,
+            displayName: rootFileName,
+            combinedSha256: combinedSha,
+            createdBy: Environment.UserName);
+
+        if (existingId == null)
+        {
+            foreach (var file in loadedFiles)
+            {
+                var sha = MetadataRepository.ComputeFileSha256(file.FilePath);
+                meta.InsertSchemaFile(
+                    schemaSetId, file.FileRole, file.FileName,
+                    file.FilePath, file.TargetNamespace, sha,
+                    importedBy: Environment.UserName);
+            }
+        }
+
+        Console.WriteLine($"Metadata: SchemaSetId={schemaSetId}");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Warning: metadata init failed: {ex.Message}");
+        meta?.Dispose();
+        meta = null;
+    }
 
     var xmlFiles = Directory.GetFiles(inputFolder, "*.xml");
     if (xmlFiles.Length == 0)
@@ -125,9 +257,21 @@ if (command == "process")
     foreach (var xmlFile in xmlFiles)
     {
         var result = new ProcessingResult { FileName = Path.GetFileName(xmlFile) };
+        long loadRunId = 0;
 
         try
         {
+            // Start metadata load run
+            if (meta != null)
+            {
+                var fileSha = MetadataRepository.ComputeFileSha256(xmlFile);
+                loadRunId = meta.InsertXmlLoadRun(
+                    schemaSetId,
+                    sourceFileName: Path.GetFileName(xmlFile),
+                    sourceUri: Path.GetFullPath(xmlFile),
+                    sourceFileSha256: fileSha);
+            }
+
             var xml = XDocument.Load(xmlFile);
             var rowTree = processor.ProcessFile(xml);
 
@@ -139,16 +283,38 @@ if (command == "process")
                 result.RowCounts[kv.Key] = kv.Value;
 
             result.Success = true;
+
+            // Record table-level load metrics
+            if (meta != null && loadRunId > 0)
+            {
+                long totalRows = 0;
+                foreach (var kv in rowCounts)
+                {
+                    var logId = meta.InsertXmlLoadRunTableLog(loadRunId, "dbo", kv.Key);
+                    meta.CompleteXmlLoadRunTableLog(logId, "Completed", rowsInserted: kv.Value);
+                    totalRows += kv.Value;
+                }
+                meta.CompleteXmlLoadRun(loadRunId, "Completed", rowsInserted: totalRows);
+            }
         }
         catch (Exception ex)
         {
             try { loader.Rollback(); } catch { /* ignore rollback errors */ }
             result.Success = false;
             result.ErrorMessage = ex.Message;
+
+            if (meta != null && loadRunId > 0)
+            {
+                meta.CompleteXmlLoadRun(loadRunId, "Failed", message: ex.Message);
+                meta.LogPipelineError("Load", ex.Message,
+                    schemaSetId: schemaSetId, loadRunId: loadRunId);
+            }
         }
 
         results.Add(result);
     }
+
+    meta?.Dispose();
 
     // Print results
     Console.WriteLine();
@@ -183,6 +349,8 @@ return 1;
 static void PrintUsage()
 {
     Console.Error.WriteLine("Usage:");
-    Console.Error.WriteLine("  SQLXML schema --xsd <root-xsd-path> [--output <sql-file-path>]");
+    Console.Error.WriteLine("  SQLXML schema --xsd <root-xsd-path> [--output <sql-file-path>] [--connection-string <conn-str>]");
     Console.Error.WriteLine("  SQLXML process --xsd <root-xsd-path> --input <xml-folder> --connection-string <conn-str>");
+    Console.Error.WriteLine();
+    Console.Error.WriteLine("When --connection-string is provided for 'schema', metadata is recorded in SQLXML_* tables.");
 }
