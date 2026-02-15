@@ -17,7 +17,7 @@ if (command == "schema")
 {
     string? xsdPath = null;
     string? outputPath = null;
-    string? connectionString = null;
+    string? metadataConnectionString = null;
 
     for (int i = 1; i < args.Length; i++)
     {
@@ -29,8 +29,8 @@ if (command == "schema")
             case "--output" when i + 1 < args.Length:
                 outputPath = args[++i];
                 break;
-            case "--connection-string" when i + 1 < args.Length:
-                connectionString = args[++i];
+            case "--metadata-connection-string" when i + 1 < args.Length:
+                metadataConnectionString = args[++i];
                 break;
         }
     }
@@ -63,12 +63,12 @@ if (command == "schema")
         Console.Write(sql);
     }
 
-    // ── Record metadata if connection string provided ──
-    if (connectionString != null)
+    // ── Record metadata if metadata connection string provided ──
+    if (metadataConnectionString != null)
     {
         try
         {
-            using var meta = new MetadataRepository(connectionString);
+            using var meta = new MetadataRepository(metadataConnectionString);
             meta.EnsureMetadataTables();
 
             var rootFile = loadedFiles.FirstOrDefault(f => f.FileRole == "Root");
@@ -152,6 +152,7 @@ if (command == "process")
     string? xsdPath = null;
     string? inputFolder = null;
     string? connectionString = null;
+    string? metadataConnectionString = null;
 
     for (int i = 1; i < args.Length; i++)
     {
@@ -165,6 +166,9 @@ if (command == "process")
                 break;
             case "--connection-string" when i + 1 < args.Length:
                 connectionString = args[++i];
+                break;
+            case "--metadata-connection-string" when i + 1 < args.Length:
+                metadataConnectionString = args[++i];
                 break;
         }
     }
@@ -194,50 +198,53 @@ if (command == "process")
 
     Console.WriteLine($"Parsed XSD: {tables.Count} tables, {structure.Slots.Count} message slots.");
 
-    // ── Set up metadata tracking ──
+    // ── Set up metadata tracking (separate DB) ──
     MetadataRepository? meta = null;
     long schemaSetId = 0;
-    try
+    if (metadataConnectionString != null)
     {
-        meta = new MetadataRepository(connectionString);
-        meta.EnsureMetadataTables();
-
-        var rootFile = loadedFiles.FirstOrDefault(f => f.FileRole == "Root");
-        var rootFileName = rootFile?.FileName ?? Path.GetFileName(xsdPath);
-        var schemaSetKey = Path.GetFileNameWithoutExtension(rootFileName);
-        var combinedSha = MetadataRepository.ComputeCombinedSha256(
-            loadedFiles.Select(f => f.FilePath));
-        var versionLabel = combinedSha[..12];
-
-        var existingId = meta.FindActiveSchemaSet(schemaSetKey, versionLabel);
-        schemaSetId = existingId ?? meta.InsertSchemaSet(
-            schemaSetKey: schemaSetKey,
-            versionLabel: versionLabel,
-            rootXsdFileName: rootFileName,
-            rootTargetNamespace: rootFile?.TargetNamespace,
-            displayName: rootFileName,
-            combinedSha256: combinedSha,
-            createdBy: Environment.UserName);
-
-        if (existingId == null)
+        try
         {
-            foreach (var file in loadedFiles)
-            {
-                var sha = MetadataRepository.ComputeFileSha256(file.FilePath);
-                meta.InsertSchemaFile(
-                    schemaSetId, file.FileRole, file.FileName,
-                    file.FilePath, file.TargetNamespace, sha,
-                    importedBy: Environment.UserName);
-            }
-        }
+            meta = new MetadataRepository(metadataConnectionString);
+            meta.EnsureMetadataTables();
 
-        Console.WriteLine($"Metadata: SchemaSetId={schemaSetId}");
-    }
-    catch (Exception ex)
-    {
-        Console.Error.WriteLine($"Warning: metadata init failed: {ex.Message}");
-        meta?.Dispose();
-        meta = null;
+            var rootFile = loadedFiles.FirstOrDefault(f => f.FileRole == "Root");
+            var rootFileName = rootFile?.FileName ?? Path.GetFileName(xsdPath);
+            var schemaSetKey = Path.GetFileNameWithoutExtension(rootFileName);
+            var combinedSha = MetadataRepository.ComputeCombinedSha256(
+                loadedFiles.Select(f => f.FilePath));
+            var versionLabel = combinedSha[..12];
+
+            var existingId = meta.FindActiveSchemaSet(schemaSetKey, versionLabel);
+            schemaSetId = existingId ?? meta.InsertSchemaSet(
+                schemaSetKey: schemaSetKey,
+                versionLabel: versionLabel,
+                rootXsdFileName: rootFileName,
+                rootTargetNamespace: rootFile?.TargetNamespace,
+                displayName: rootFileName,
+                combinedSha256: combinedSha,
+                createdBy: Environment.UserName);
+
+            if (existingId == null)
+            {
+                foreach (var file in loadedFiles)
+                {
+                    var sha = MetadataRepository.ComputeFileSha256(file.FilePath);
+                    meta.InsertSchemaFile(
+                        schemaSetId, file.FileRole, file.FileName,
+                        file.FilePath, file.TargetNamespace, sha,
+                        importedBy: Environment.UserName);
+                }
+            }
+
+            Console.WriteLine($"Metadata: SchemaSetId={schemaSetId}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: metadata init failed: {ex.Message}");
+            meta?.Dispose();
+            meta = null;
+        }
     }
 
     var xmlFiles = Directory.GetFiles(inputFolder, "*.xml");
@@ -349,8 +356,10 @@ return 1;
 static void PrintUsage()
 {
     Console.Error.WriteLine("Usage:");
-    Console.Error.WriteLine("  SQLXML schema --xsd <root-xsd-path> [--output <sql-file-path>] [--connection-string <conn-str>]");
-    Console.Error.WriteLine("  SQLXML process --xsd <root-xsd-path> --input <xml-folder> --connection-string <conn-str>");
+    Console.Error.WriteLine("  SQLXML schema --xsd <path> [--output <sql-file>] [--metadata-connection-string <conn-str>]");
+    Console.Error.WriteLine("  SQLXML process --xsd <path> --input <xml-folder> --connection-string <conn-str>");
+    Console.Error.WriteLine("                 [--metadata-connection-string <conn-str>]");
     Console.Error.WriteLine();
-    Console.Error.WriteLine("When --connection-string is provided for 'schema', metadata is recorded in SQLXML_* tables.");
+    Console.Error.WriteLine("  --connection-string           Target database for business tables / data loading");
+    Console.Error.WriteLine("  --metadata-connection-string  Database for SQLXML_* metadata tables (can be a different server)");
 }
