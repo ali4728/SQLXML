@@ -22,12 +22,30 @@ public class XsdParser
     private readonly List<TableDefinition> _tables = new();
     private readonly MessageStructure _messageStructure = new();
     private readonly HashSet<string> _createdTableNames = new(StringComparer.OrdinalIgnoreCase);
-    private readonly List<LoadedXsdFileInfo> _loadedFiles = new();
     private int _sortOrder;
 
+    /// <summary>
+    /// Convenience overload: loads XSD from disk, then parses.
+    /// </summary>
     public (List<TableDefinition> Tables, MessageStructure Structure, List<LoadedXsdFileInfo> LoadedFiles) Parse(string rootXsdPath)
     {
-        LoadXsdChain(rootXsdPath);
+        var (files, docs, prefixMaps) = XsdLoader.LoadFromDisk(rootXsdPath);
+        var (tables, structure) = Parse(docs, prefixMaps);
+        return (tables, structure, files);
+    }
+
+    /// <summary>
+    /// Core parse entry point: accepts pre-loaded XSD documents (from DB or disk).
+    /// </summary>
+    public (List<TableDefinition> Tables, MessageStructure Structure) Parse(
+        Dictionary<string, XDocument> docs,
+        Dictionary<XDocument, Dictionary<string, string>> prefixMaps)
+    {
+        foreach (var (ns, doc) in docs)
+            _docs[ns] = doc;
+        foreach (var (doc, map) in prefixMaps)
+            _prefixMaps[doc] = map;
+
         BuildTypeDictionary();
 
         // Dynamic root element discovery: find the first top-level xs:element
@@ -57,7 +75,7 @@ public class XsdParser
         // Shorten column names that exceed SQL Server's 128-char identifier limit
         ShortenLongIdentifiers();
 
-        return (_tables, _messageStructure, _loadedFiles);
+        return (_tables, _messageStructure);
     }
 
     private XElement? GetComplexType(XElement element)
@@ -554,60 +572,6 @@ public class XsdParser
         }
     }
 
-    private void LoadXsdChain(string rootPath)
-    {
-        var loaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var queue = new Queue<string>();
-        var rootFullPath = Path.GetFullPath(rootPath);
-        queue.Enqueue(rootFullPath);
-        bool isFirst = true;
-
-        while (queue.Count > 0)
-        {
-            var path = queue.Dequeue();
-            if (!loaded.Add(path)) continue;
-
-            var doc = XDocument.Load(path);
-            var targetNs = doc.Root?.Attribute("targetNamespace")?.Value ?? "";
-            _docs[targetNs] = doc;
-
-            // Track loaded file info for metadata
-            _loadedFiles.Add(new LoadedXsdFileInfo
-            {
-                FilePath = path,
-                FileName = Path.GetFileName(path),
-                TargetNamespace = targetNs,
-                FileRole = isFirst ? "Root" : "Import"
-            });
-            isFirst = false;
-
-            // Build prefix map for this document
-            var prefixMap = new Dictionary<string, string>();
-            if (doc.Root != null)
-            {
-                foreach (var attr in doc.Root.Attributes())
-                {
-                    if (attr.IsNamespaceDeclaration)
-                    {
-                        var prefix = attr.Name.LocalName == "xmlns" ? "" : attr.Name.LocalName;
-                        prefixMap[prefix] = attr.Value;
-                    }
-                }
-            }
-            _prefixMaps[doc] = prefixMap;
-
-            // Follow xs:import
-            var dir = Path.GetDirectoryName(path)!;
-            foreach (var import in doc.Descendants(Xs + "import"))
-            {
-                var loc = import.Attribute("schemaLocation")?.Value;
-                if (loc != null)
-                {
-                    queue.Enqueue(Path.GetFullPath(Path.Combine(dir, loc)));
-                }
-            }
-        }
-    }
 
     private void BuildTypeDictionary()
     {

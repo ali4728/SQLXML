@@ -10,4 +10,6 @@ public class LoadedXsdFileInfo
     public string TargetNamespace { get; set; } = string.Empty;
     /// <summary>'Root' | 'Import' | 'Include' | 'Redefine'</summary>
     public string FileRole { get; set; } = "Other";
+    /// <summary>Raw XML text content of the XSD file (populated during disk loading for DB storage).</summary>
+    public string? ContentXml { get; set; }
 }

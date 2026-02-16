@@ -360,6 +360,38 @@ public class MetadataRepository : IDisposable
         cmd.ExecuteNonQuery();
     }
 
+    // ── Schema File Retrieval ────────────────────────────────────────
+
+    /// <summary>
+    /// Returns all XSD files for the given schema set, ordered by FileRole (Root first).
+    /// </summary>
+    public List<SchemaFileRecord> GetSchemaFiles(long schemaSetId)
+    {
+        const string sql = """
+            SELECT FileName, FileRole, TargetNamespace, ContentXml
+            FROM dbo.SQLXML_XsdSchemaFile
+            WHERE SchemaSetId = @SetId
+            ORDER BY CASE FileRole WHEN 'Root' THEN 0 ELSE 1 END, FileName
+            """;
+
+        using var cmd = new SqlCommand(sql, _conn, _tx);
+        cmd.Parameters.AddWithValue("@SetId", schemaSetId);
+        using var reader = cmd.ExecuteReader();
+
+        var results = new List<SchemaFileRecord>();
+        while (reader.Read())
+        {
+            results.Add(new SchemaFileRecord
+            {
+                FileName = reader.GetString(0),
+                FileRole = reader.GetString(1),
+                TargetNamespace = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                ContentXml = reader.IsDBNull(3) ? "" : reader.GetString(3)
+            });
+        }
+        return results;
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     /// <summary>
@@ -403,6 +435,20 @@ public class MetadataRepository : IDisposable
         {
             var bytes = File.ReadAllBytes(path);
             sha.AppendData(bytes);
+        }
+        var hash = sha.GetCurrentHash();
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Computes a combined SHA-256 over in-memory content entries (sorted by name, concatenated).
+    /// </summary>
+    public static string ComputeCombinedSha256FromContent(IEnumerable<(string FileName, string Content)> entries)
+    {
+        using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var (_, content) in entries.OrderBy(e => e.FileName, StringComparer.OrdinalIgnoreCase))
+        {
+            sha.AppendData(Encoding.UTF8.GetBytes(content));
         }
         var hash = sha.GetCurrentHash();
         return Convert.ToHexString(hash).ToLowerInvariant();
