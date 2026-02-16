@@ -45,6 +45,7 @@ CREATE TABLE dbo.SQLXML_XsdSchemaSet
 
     -- Content fingerprinting
     CombinedSha256       CHAR(64) NULL,            -- hash of canonicalized/concatenated content if you do that
+    SourceConfigJson     NVARCHAR(MAX) NULL,       -- JSON with source table settings (connection string, query, columns)
     CreatedUtc           DATETIME2(3) NOT NULL CONSTRAINT DF_SQLXML_XsdSchemaSet_CreatedUtc DEFAULT (SYSUTCDATETIME()),
     CreatedBy            NVARCHAR(128) NULL,
     CONSTRAINT UQ_SQLXML_XsdSchemaSet_KeyVersion UNIQUE (SchemaSetKey, VersionLabel)

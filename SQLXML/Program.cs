@@ -1,4 +1,5 @@
 using System.Xml.Linq;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using SQLXML.Generation;
 using SQLXML.MetaData;
@@ -29,6 +30,7 @@ if (command == "register")
     string? schemaName = null;
     string? version = null;
     string? metadataConnectionString = null;
+    string? sourceConfigPath = null;
 
     for (int i = 1; i < args.Length; i++)
     {
@@ -46,6 +48,9 @@ if (command == "register")
             case "--metadata-connection-string" when i + 1 < args.Length:
                 metadataConnectionString = args[++i];
                 break;
+            case "--source-config" when i + 1 < args.Length:
+                sourceConfigPath = args[++i];
+                break;
         }
     }
 
@@ -62,6 +67,17 @@ if (command == "register")
     {
         Console.Error.WriteLine($"Error: XSD file not found: {xsdPath}");
         return 1;
+    }
+
+    string? sourceConfigJson = null;
+    if (sourceConfigPath != null)
+    {
+        if (!File.Exists(sourceConfigPath))
+        {
+            Console.Error.WriteLine($"Error: source config file not found: {sourceConfigPath}");
+            return 1;
+        }
+        sourceConfigJson = File.ReadAllText(sourceConfigPath);
     }
 
     // Load XSD chain from disk (with normalized schemaLocation + ContentXml)
@@ -97,7 +113,8 @@ if (command == "register")
         rootTargetNamespace: rootFile?.TargetNamespace,
         displayName: rootFileName,
         combinedSha256: combinedSha,
-        createdBy: Environment.UserName);
+        createdBy: Environment.UserName,
+        sourceConfigJson: sourceConfigJson);
 
     foreach (var file in files)
     {
@@ -235,9 +252,9 @@ if (command == "generateddl")
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// PROCESS — load XML data using XSD from metadata DB
+// PROCESS-FILE — load XML data from files using XSD from metadata DB
 // ═══════════════════════════════════════════════════════════════════
-if (command == "process")
+if (command == "process-file")
 {
     string? schemaName = null;
     string? version = null;
@@ -286,38 +303,10 @@ if (command == "process")
         return 1;
     }
 
-    // Load XSD content from metadata DB
-    using var meta = new MetadataRepository(metadataConnectionString);
-    meta.EnsureMetadataTables();
+    var (tables, structure, meta, schemaSetId) = LoadSchemaSet(schemaName, version, metadataConnectionString);
+    if (tables == null) return 1;
 
-    var schemaSetId = meta.FindActiveSchemaSet(schemaName, version);
-    if (schemaSetId == null)
-    {
-        Console.Error.WriteLine($"Error: schema set '{schemaName}' version '{version}' not found.");
-        return 1;
-    }
-
-    var schemaFiles = meta.GetSchemaFiles(schemaSetId.Value);
-    if (schemaFiles.Count == 0)
-    {
-        Console.Error.WriteLine("Error: no XSD files found for this schema set.");
-        return 1;
-    }
-
-    var rootFile = schemaFiles.FirstOrDefault(f => f.FileRole == "Root");
-    if (rootFile == null)
-    {
-        Console.Error.WriteLine("Error: no root XSD file found in schema set.");
-        return 1;
-    }
-
-    var xsdContentByFileName = schemaFiles.ToDictionary(f => f.FileName, f => f.ContentXml);
-    var (docs, prefixMaps) = XsdLoader.LoadFromContent(xsdContentByFileName, rootFile.FileName);
-
-    var parser = new XsdParser();
-    var (tables, structure) = parser.Parse(docs, prefixMaps);
-
-    Console.WriteLine($"Parsed XSD: {tables.Count} tables, {structure.Slots.Count} message slots.");
+    Console.WriteLine($"Parsed XSD: {tables.Count} tables, {structure!.Slots.Count} message slots.");
 
     var xmlFiles = Directory.GetFiles(inputFolder, "*.xml");
     if (xmlFiles.Length == 0)
@@ -335,57 +324,263 @@ if (command == "process")
 
     foreach (var xmlFile in xmlFiles)
     {
-        var result = new ProcessingResult { FileName = Path.GetFileName(xmlFile) };
-        long loadRunId = 0;
-
-        try
-        {
-            var fileSha = MetadataRepository.ComputeFileSha256(xmlFile);
-            loadRunId = meta.InsertXmlLoadRun(
-                schemaSetId.Value,
-                sourceFileName: Path.GetFileName(xmlFile),
-                sourceUri: Path.GetFullPath(xmlFile),
-                sourceFileSha256: fileSha);
-
-            var xml = XDocument.Load(xmlFile);
-            var rowTree = processor.ProcessFile(xml);
-
-            loader.BeginTransaction();
-            var rowCounts = loader.InsertRowTree(rowTree);
-            loader.Commit();
-
-            foreach (var kv in rowCounts)
-                result.RowCounts[kv.Key] = kv.Value;
-
-            result.Success = true;
-
-            long totalRows = 0;
-            foreach (var kv in rowCounts)
-            {
-                var logId = meta.InsertXmlLoadRunTableLog(loadRunId, "dbo", kv.Key);
-                meta.CompleteXmlLoadRunTableLog(logId, "Completed", rowsInserted: kv.Value);
-                totalRows += kv.Value;
-            }
-            meta.CompleteXmlLoadRun(loadRunId, "Completed", rowsInserted: totalRows);
-        }
-        catch (Exception ex)
-        {
-            try { loader.Rollback(); } catch { /* ignore rollback errors */ }
-            result.Success = false;
-            result.ErrorMessage = ex.Message;
-
-            if (loadRunId > 0)
-            {
-                meta.CompleteXmlLoadRun(loadRunId, "Failed", message: ex.Message);
-                meta.LogPipelineError("Load", ex.Message,
-                    schemaSetId: schemaSetId, loadRunId: loadRunId);
-            }
-        }
-
+        var fileSha = MetadataRepository.ComputeFileSha256(xmlFile);
+        var xml = XDocument.Load(xmlFile);
+        var result = ProcessSingleXml(
+            xml,
+            sourceName: Path.GetFileName(xmlFile),
+            sourceUri: Path.GetFullPath(xmlFile),
+            sourceSha256: fileSha,
+            externalId: null,
+            processor, loader, meta!, schemaSetId!.Value);
         results.Add(result);
     }
 
-    // Print results
+    PrintResults(results);
+    return results.All(r => r.Success) ? 0 : 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PROCESS-SQL — load XML data from a SQL table using XSD from metadata DB
+// ═══════════════════════════════════════════════════════════════════
+if (command == "process-sql")
+{
+    string? schemaName = null;
+    string? version = null;
+    string? connectionString = null;
+    string? metadataConnectionString = null;
+
+    for (int i = 1; i < args.Length; i++)
+    {
+        switch (args[i])
+        {
+            case "--schema-name" when i + 1 < args.Length:
+                schemaName = args[++i];
+                break;
+            case "--version" when i + 1 < args.Length:
+                version = args[++i];
+                break;
+            case "--connection-string" when i + 1 < args.Length:
+                connectionString = args[++i];
+                break;
+            case "--metadata-connection-string" when i + 1 < args.Length:
+                metadataConnectionString = args[++i];
+                break;
+        }
+    }
+
+    connectionString ??= configuration.GetConnectionString("DefaultConnection");
+    metadataConnectionString ??= configuration.GetConnectionString("MetadataConnection");
+
+    if (schemaName != null) schemaName = NormalizeSchemaName(schemaName);
+
+    if (schemaName == null || version == null || connectionString == null || metadataConnectionString == null)
+    {
+        Console.Error.WriteLine("Error: --schema-name, --version, --connection-string, and --metadata-connection-string are required.");
+        PrintUsage();
+        return 1;
+    }
+
+    var (tables, structure, meta, schemaSetId) = LoadSchemaSet(schemaName, version, metadataConnectionString);
+    if (tables == null) return 1;
+
+    // Load source config from metadata
+    var sourceConfigJsonRaw = meta!.GetSourceConfig(schemaSetId!.Value);
+    if (string.IsNullOrWhiteSpace(sourceConfigJsonRaw))
+    {
+        Console.Error.WriteLine("Error: No source config registered for this schema set. Use `register --source-config` to provide one.");
+        return 1;
+    }
+
+    var sourceConfig = System.Text.Json.JsonSerializer.Deserialize<SourceConfig>(
+        sourceConfigJsonRaw,
+        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+    if (sourceConfig == null || string.IsNullOrWhiteSpace(sourceConfig.SourceConnectionString)
+        || string.IsNullOrWhiteSpace(sourceConfig.SourceQuery))
+    {
+        Console.Error.WriteLine("Error: source config must contain 'sourceConnectionString' and 'sourceQuery'.");
+        return 1;
+    }
+
+    Console.WriteLine($"Parsed XSD: {tables.Count} tables, {structure!.Slots.Count} message slots.");
+
+    // Read source rows from the external SQL table
+    var sourceRows = new List<(string id, string xmlContent)>();
+    using (var srcConn = new SqlConnection(sourceConfig.SourceConnectionString))
+    {
+        srcConn.Open();
+        using var srcCmd = new SqlCommand(sourceConfig.SourceQuery, srcConn);
+        srcCmd.CommandTimeout = 120;
+        using var reader = srcCmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var idValue = reader[sourceConfig.SourceIdColumn]?.ToString() ?? "";
+            var xmlValue = reader[sourceConfig.SourceXmlColumn]?.ToString() ?? "";
+            sourceRows.Add((idValue, xmlValue));
+        }
+    }
+
+    if (sourceRows.Count == 0)
+    {
+        Console.WriteLine("No rows returned by source query.");
+        return 0;
+    }
+
+    Console.WriteLine($"Found {sourceRows.Count} row(s) to process from source query.");
+
+    var results = new List<ProcessingResult>();
+    var processor = new XmlProcessor(tables, structure);
+
+    using var loader = new SqlServerLoader(connectionString, tables);
+
+    foreach (var (id, xmlContent) in sourceRows)
+    {
+        var xml = XDocument.Parse(xmlContent);
+        long.TryParse(id, out var externalIdValue);
+        var result = ProcessSingleXml(
+            xml,
+            sourceName: id,
+            sourceUri: $"sql://{sourceConfig.SourceIdColumn}/{id}",
+            sourceSha256: null,
+            externalId: externalIdValue != 0 ? externalIdValue : null,
+            processor, loader, meta, schemaSetId.Value);
+        results.Add(result);
+    }
+
+    PrintResults(results);
+
+    // If all rows succeeded and a source update query was provided, mark source rows as processed
+    if (results.All(r => r.Success) && sourceConfig.SourceUpdateQuery != null)
+    {
+        try
+        {
+            int updatedCount = 0;
+            using var updateConn = new SqlConnection(sourceConfig.SourceConnectionString);
+            updateConn.Open();
+            foreach (var (id, _) in sourceRows)
+            {
+                using var updateCmd = new SqlCommand(sourceConfig.SourceUpdateQuery, updateConn);
+                updateCmd.Parameters.AddWithValue("@Id", id);
+                updatedCount += updateCmd.ExecuteNonQuery();
+            }
+            Console.WriteLine($"Source update: {updatedCount} row(s) updated.");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: source update query failed: {ex.Message}");
+        }
+    }
+
+    return results.All(r => r.Success) ? 0 : 1;
+}
+
+Console.Error.WriteLine($"Unknown command: {command}");
+PrintUsage();
+return 1;
+
+// ═══════════════════════════════════════════════════════════════════
+// Shared helpers
+// ═══════════════════════════════════════════════════════════════════
+
+static (List<TableDefinition>? tables, MessageStructure? structure, MetadataRepository? meta, long? schemaSetId) LoadSchemaSet(
+    string schemaName, string version, string metadataConnectionString)
+{
+    var meta = new MetadataRepository(metadataConnectionString);
+    meta.EnsureMetadataTables();
+
+    var schemaSetId = meta.FindActiveSchemaSet(schemaName, version);
+    if (schemaSetId == null)
+    {
+        Console.Error.WriteLine($"Error: schema set '{schemaName}' version '{version}' not found.");
+        return (null, null, null, null);
+    }
+
+    var schemaFiles = meta.GetSchemaFiles(schemaSetId.Value);
+    if (schemaFiles.Count == 0)
+    {
+        Console.Error.WriteLine("Error: no XSD files found for this schema set.");
+        return (null, null, null, null);
+    }
+
+    var rootFile = schemaFiles.FirstOrDefault(f => f.FileRole == "Root");
+    if (rootFile == null)
+    {
+        Console.Error.WriteLine("Error: no root XSD file found in schema set.");
+        return (null, null, null, null);
+    }
+
+    var xsdContentByFileName = schemaFiles.ToDictionary(f => f.FileName, f => f.ContentXml);
+    var (docs, prefixMaps) = XsdLoader.LoadFromContent(xsdContentByFileName, rootFile.FileName);
+
+    var parser = new XsdParser();
+    var (tables, structure) = parser.Parse(docs, prefixMaps);
+
+    return (tables, structure, meta, schemaSetId.Value);
+}
+
+static ProcessingResult ProcessSingleXml(
+    XDocument xml, string sourceName, string sourceUri, string? sourceSha256,
+    long? externalId,
+    XmlProcessor processor, SqlServerLoader loader,
+    MetadataRepository meta, long schemaSetId)
+{
+    var result = new ProcessingResult { FileName = sourceName };
+    long loadRunId = 0;
+
+    try
+    {
+        loadRunId = meta.InsertXmlLoadRun(
+            schemaSetId,
+            sourceFileName: sourceName,
+            sourceUri: sourceUri,
+            sourceFileSha256: sourceSha256);
+
+        var rowTree = processor.ProcessFile(xml);
+
+        // Set ExternalId on the root row if provided (process-sql)
+        if (externalId.HasValue)
+        {
+            rowTree.Values["ExternalId"] = externalId.Value.ToString();
+        }
+
+        loader.BeginTransaction();
+        var rowCounts = loader.InsertRowTree(rowTree);
+        loader.Commit();
+
+        foreach (var kv in rowCounts)
+            result.RowCounts[kv.Key] = kv.Value;
+
+        result.Success = true;
+
+        long totalRows = 0;
+        foreach (var kv in rowCounts)
+        {
+            var logId = meta.InsertXmlLoadRunTableLog(loadRunId, "dbo", kv.Key);
+            meta.CompleteXmlLoadRunTableLog(logId, "Completed", rowsInserted: kv.Value);
+            totalRows += kv.Value;
+        }
+        meta.CompleteXmlLoadRun(loadRunId, "Completed", rowsInserted: totalRows);
+    }
+    catch (Exception ex)
+    {
+        try { loader.Rollback(); } catch { /* ignore rollback errors */ }
+        result.Success = false;
+        result.ErrorMessage = ex.Message;
+
+        if (loadRunId > 0)
+        {
+            meta.CompleteXmlLoadRun(loadRunId, "Failed", message: ex.Message);
+            meta.LogPipelineError("Load", ex.Message,
+                schemaSetId: schemaSetId, loadRunId: loadRunId);
+        }
+    }
+
+    return result;
+}
+
+static void PrintResults(List<ProcessingResult> results)
+{
     Console.WriteLine();
     Console.WriteLine("Processing Results:");
     Console.WriteLine(new string('-', 60));
@@ -407,30 +602,29 @@ if (command == "process")
             Console.WriteLine($"    Error: {result.ErrorMessage}");
         }
     }
-
-    return results.All(r => r.Success) ? 0 : 1;
 }
-
-Console.Error.WriteLine($"Unknown command: {command}");
-PrintUsage();
-return 1;
 
 static void PrintUsage()
 {
     Console.Error.WriteLine("Usage:");
     Console.Error.WriteLine();
     Console.Error.WriteLine("  SQLXML register --xsd <path> [--schema-name <name>] [--version <label>]");
+    Console.Error.WriteLine("                  [--source-config <json-file>]");
     Console.Error.WriteLine("                  [--metadata-connection-string <conn-str>]");
     Console.Error.WriteLine();
     Console.Error.WriteLine("  SQLXML generateddl --schema-name <name> --version <ver> [--output <sql-file>]");
     Console.Error.WriteLine("                [--metadata-connection-string <conn-str>]");
     Console.Error.WriteLine();
-    Console.Error.WriteLine("  SQLXML process --schema-name <name> --version <ver> --input <xml-folder>");
+    Console.Error.WriteLine("  SQLXML process-file --schema-name <name> --version <ver> --input <xml-folder>");
+    Console.Error.WriteLine("                 --connection-string <conn-str> [--metadata-connection-string <conn-str>]");
+    Console.Error.WriteLine();
+    Console.Error.WriteLine("  SQLXML process-sql --schema-name <name> --version <ver>");
     Console.Error.WriteLine("                 --connection-string <conn-str> [--metadata-connection-string <conn-str>]");
     Console.Error.WriteLine();
     Console.Error.WriteLine("Options:");
     Console.Error.WriteLine("  --connection-string           Target database for business tables / data loading");
     Console.Error.WriteLine("  --metadata-connection-string  Database for SQLXML_* metadata tables (can be a different server)");
+    Console.Error.WriteLine("  --source-config               JSON file with source table settings (stored in metadata at register time)");
 }
 
 static string NormalizeSchemaName(string name)

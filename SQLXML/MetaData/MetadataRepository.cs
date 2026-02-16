@@ -43,6 +43,18 @@ public class MetadataRepository : IDisposable
 
         var script = File.ReadAllText(scriptPath);
         ExecuteBatches(script);
+        EnsureSourceConfigColumn();
+    }
+
+    /// <summary>Adds SourceConfigJson column to existing SQLXML_XsdSchemaSet tables (idempotent migration).</summary>
+    private void EnsureSourceConfigColumn()
+    {
+        const string sql = """
+            IF COL_LENGTH('dbo.SQLXML_XsdSchemaSet','SourceConfigJson') IS NULL
+                ALTER TABLE dbo.SQLXML_XsdSchemaSet ADD SourceConfigJson NVARCHAR(MAX) NULL
+            """;
+        using var cmd = new SqlCommand(sql, _conn, _tx);
+        cmd.ExecuteNonQuery();
     }
 
     private static string? FindCreateTablesScript()
@@ -89,14 +101,15 @@ public class MetadataRepository : IDisposable
         string? displayName = null,
         string? description = null,
         string? combinedSha256 = null,
-        string? createdBy = null)
+        string? createdBy = null,
+        string? sourceConfigJson = null)
     {
         const string sql = """
             INSERT INTO dbo.SQLXML_XsdSchemaSet
                 (SchemaSetKey, VersionLabel, RootXsdFileName, RootTargetNamespace,
-                 DisplayName, Description, CombinedSha256, CreatedBy)
+                 DisplayName, Description, CombinedSha256, CreatedBy, SourceConfigJson)
             VALUES
-                (@Key, @Ver, @Root, @Ns, @Display, @Desc, @Sha, @By);
+                (@Key, @Ver, @Root, @Ns, @Display, @Desc, @Sha, @By, @SrcCfg);
             SELECT SCOPE_IDENTITY();
             """;
 
@@ -109,7 +122,18 @@ public class MetadataRepository : IDisposable
         cmd.Parameters.AddWithValue("@Desc", (object?)description ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@Sha", (object?)combinedSha256 ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@By", (object?)createdBy ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@SrcCfg", (object?)sourceConfigJson ?? DBNull.Value);
         return Convert.ToInt64(cmd.ExecuteScalar());
+    }
+
+    /// <summary>Returns the raw SourceConfigJson for a schema set, or null if not set.</summary>
+    public string? GetSourceConfig(long schemaSetId)
+    {
+        const string sql = "SELECT SourceConfigJson FROM dbo.SQLXML_XsdSchemaSet WHERE SchemaSetId = @Id";
+        using var cmd = new SqlCommand(sql, _conn, _tx);
+        cmd.Parameters.AddWithValue("@Id", schemaSetId);
+        var result = cmd.ExecuteScalar();
+        return result == null || result == DBNull.Value ? null : (string)result;
     }
 
     // ── 2) Schema Files ─────────────────────────────────────────────

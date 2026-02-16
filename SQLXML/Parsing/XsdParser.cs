@@ -62,6 +62,15 @@ public class XsdParser
         var rootTable = CreateTable(rootName);
         rootTable.XmlElementName = rootName;
 
+        // Add ExternalId column for linking to external source rows (e.g. process-sql)
+        rootTable.Columns.Add(new ColumnDefinition
+        {
+            ColumnName = "ExternalId",
+            SqlType = "BIGINT",
+            IsNullable = true,
+            XmlPath = new List<string>()
+        });
+
         // Get the complex type (inline or referenced) and process its children
         var complexType = GetComplexType(rootElement);
         if (complexType != null)
