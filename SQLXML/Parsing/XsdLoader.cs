@@ -166,8 +166,23 @@ public static class XsdLoader
             }
         }
 
-        return modified ? doc.Declaration?.ToString() + Environment.NewLine + doc.ToString()
-                        : xsdXml;
+        var result = modified
+            ? doc.Declaration?.ToString() + Environment.NewLine + doc.ToString()
+            : xsdXml;
+        return StripEncodingDeclaration(result);
+    }
+
+    /// <summary>
+    /// Remove encoding="..." from XML declaration for SQL Server XML column compatibility.
+    /// SQL Server's XML type stores data as UTF-16 internally and rejects encoding="UTF-8".
+    /// </summary>
+    private static string StripEncodingDeclaration(string xml)
+    {
+        return System.Text.RegularExpressions.Regex.Replace(
+            xml,
+            @"(<\?xml\s[^?]*?)\s+encoding\s*=\s*""[^""]*""",
+            "$1",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     }
 
     private static Dictionary<string, string> BuildPrefixMap(XDocument doc)
