@@ -98,6 +98,7 @@ Parse XML files from a folder and insert data into the target database using a r
 ```bash
 SQLXML process-file --schema-name <name> --version <ver> --input <xml-folder>
                     --connection-string <conn-str> [--metadata-connection-string <conn-str>]
+                    [--delete-source-files <Y|N>]
 ```
 
 **Example:**
@@ -165,6 +166,7 @@ SQLXML process-sql --schema-name ADT_A01 --version v1 \
 | `--output <path>` | `generateddl` | Output path for generated SQL script |
 | `--input <folder>` | `process-file` | Folder containing XML files to process |
 | `--connection-string <conn-str>` | `process-file`, `process-sql` | SQL Server connection string for the target database (or set via `DefaultConnection` in appsettings.json) |
+| `--delete-source-files <Y\|N>` | `process-file` | Delete source XML files after successful processing (default: N) |
 | `--metadata-connection-string <conn-str>` | all | SQL Server connection string for the metadata database (or set via `MetadataConnection` in appsettings.json) |
 
 ## How It Works

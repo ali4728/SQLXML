@@ -274,6 +274,7 @@ if (command == "process-file")
     string? inputFolder = null;
     string? connectionString = null;
     string? metadataConnectionString = null;
+    string? deleteSourceFiles = null;
 
     for (int i = 1; i < args.Length; i++)
     {
@@ -294,8 +295,13 @@ if (command == "process-file")
             case "--metadata-connection-string" when i + 1 < args.Length:
                 metadataConnectionString = args[++i];
                 break;
+            case "--delete-source-files" when i + 1 < args.Length:
+                deleteSourceFiles = args[++i];
+                break;
         }
     }
+
+    var shouldDeleteSourceFiles = string.Equals(deleteSourceFiles, "Y", StringComparison.OrdinalIgnoreCase);
 
     connectionString ??= configuration.GetConnectionString("DefaultConnection");
     metadataConnectionString ??= configuration.GetConnectionString("MetadataConnection");
@@ -347,6 +353,12 @@ if (command == "process-file")
             externalId: null,
             processor, loader, meta!, schemaSetId!.Value);
         results.Add(result);
+
+        if (shouldDeleteSourceFiles && result.Success)
+        {
+            File.Delete(xmlFile);
+            Console.WriteLine($"  Deleted source file: {Path.GetFileName(xmlFile)}");
+        }
     }
 
     PrintResults(results);
@@ -635,6 +647,7 @@ static void PrintUsage()
     Console.Error.WriteLine();
     Console.Error.WriteLine("  SQLXML process-file --schema-name <name> --version <ver> --input <xml-folder>");
     Console.Error.WriteLine("                 --connection-string <conn-str> [--metadata-connection-string <conn-str>]");
+    Console.Error.WriteLine("                 [--delete-source-files <Y|N>]");
     Console.Error.WriteLine();
     Console.Error.WriteLine("  SQLXML process-sql --schema-name <name> --version <ver>");
     Console.Error.WriteLine("                 --connection-string <conn-str> [--metadata-connection-string <conn-str>]");
@@ -644,6 +657,7 @@ static void PrintUsage()
     Console.Error.WriteLine("  --metadata-connection-string  Database for SQLXML_* metadata tables (can be a different server)");
     Console.Error.WriteLine("  --source-config               JSON file with source table settings (stored in metadata at register time)");
     Console.Error.WriteLine("  --table-prefix                Prefix for all generated table names (e.g., 'marketing' → 'marketing_PID')");
+    Console.Error.WriteLine("  --delete-source-files         Delete source XML files after successful processing (Y or N, default N)");
 }
 
 static string NormalizeSchemaName(string name)
