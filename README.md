@@ -6,11 +6,11 @@ A .NET 8 console application that converts **XSD schemas into SQL Server tables*
 
 - **Schema Registration** — Store XSD files (with all imports/includes) in a metadata database for versioned, repeatable use.
 - **Schema Generation** — Generate SQL Server `CREATE TABLE` DDL scripts with primary keys, foreign keys, and proper column types from a registered XSD.
-- **XML Data Loading** — Process a folder of XML files and insert data into SQL Server, respecting parent-child relationships and insert ordering.
+- **XML Data Loading** — Process XML from a folder of files or from rows in a SQL source table, and insert data into SQL Server respecting parent-child relationships and insert ordering.
 - **Smart Flattening** — Singleton complex types are flattened into wide tables to minimize table count; repeating elements get their own child tables with `RepeatIndex` for ordering.
 - **Column Overflow Handling** — Tables exceeding 300 columns are automatically split into `_Ext` extension tables.
 - **Identifier Shortening** — Column and table names exceeding SQL Server's 128-character limit are automatically abbreviated using domain-aware rules.
-- **Per-File Transactions** — Each XML file is processed in its own transaction; failures are isolated and do not affect prior successful inserts.
+- **Per-Document Transactions** — Each XML document (file or source row) is processed in its own transaction; failures are isolated and do not affect prior successful inserts.
 - **Metadata Tracking** — Schema sets, generation runs, and load metrics are recorded in a metadata database for auditing and lineage.
 
 ## Prerequisites
@@ -121,10 +121,10 @@ SQLXML process-sql --schema-name <name> --version <ver>
 ```json
 {
   "sourceConnectionString": "Server=YOUR_SERVER;Database=YOUR_DB;Trusted_Connection=True;TrustServerCertificate=True;",
-  "sourceQuery": "SELECT Id, HL7XML FROM dbo.InboundMessages WHERE ProcessedFlag = 0",
+  "sourceQuery": "SELECT Id, YourXMLColumn FROM dbo.YourSourceTable WHERE ProcessedFlag = 0",
   "sourceIdColumn": "Id",
-  "sourceXmlColumn": "HL7XML",
-  "sourceUpdateQuery": "UPDATE dbo.InboundMessages SET ProcessedFlag = 1 WHERE Id = @Id"
+  "sourceXmlColumn": "YourXMLColumn",
+  "sourceUpdateQuery": "UPDATE dbo.YourSourceTable SET ProcessedFlag = 1 WHERE Id = @Id"
 }
 ```
 
@@ -133,7 +133,7 @@ SQLXML process-sql --schema-name <name> --version <ver>
 | `sourceConnectionString` | Yes | — | Connection string to the source database containing XML rows |
 | `sourceQuery` | Yes | — | Any valid `SELECT` query; extra `WHERE` conditions are fine |
 | `sourceIdColumn` | No | `"Id"` | Column name used as the row identifier |
-| `sourceXmlColumn` | No | `"HL7XML"` | Column name containing the XML content |
+| `sourceXmlColumn` | No | `"HL7XML"` | Column name containing the XML content (default matches the code default) |
 | `sourceUpdateQuery` | No | — | `UPDATE` statement with an `@Id` parameter; executed per row after **all** rows succeed |
 
 **Example end-to-end workflow:**
