@@ -17,12 +17,12 @@ public static class XsdLoader
     /// SchemaLocation attributes are normalized to bare filenames in the returned ContentXml.
     /// </summary>
     public static (List<LoadedXsdFileInfo> Files,
-                    Dictionary<string, XDocument> Docs,
+                    List<(string Namespace, XDocument Doc)> Docs,
                     Dictionary<XDocument, Dictionary<string, string>> PrefixMaps)
         LoadFromDisk(string rootXsdPath)
     {
         var files = new List<LoadedXsdFileInfo>();
-        var docs = new Dictionary<string, XDocument>();
+        var docs = new List<(string Namespace, XDocument Doc)>();
         var prefixMaps = new Dictionary<XDocument, Dictionary<string, string>>();
 
         var loaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -38,7 +38,7 @@ public static class XsdLoader
 
             var doc = XDocument.Load(path);
             var targetNs = doc.Root?.Attribute("targetNamespace")?.Value ?? "";
-            docs[targetNs] = doc;
+            docs.Add((targetNs, doc));
 
             // Normalize schemaLocation to bare filenames in a copy for storage
             var contentXml = NormalizeSchemaLocations(File.ReadAllText(path));
@@ -57,11 +57,22 @@ public static class XsdLoader
             var prefixMap = BuildPrefixMap(doc);
             prefixMaps[doc] = prefixMap;
 
-            // Follow xs:import
             var dir = Path.GetDirectoryName(path)!;
+
+            // Follow xs:import
             foreach (var import in doc.Descendants(Xs + "import"))
             {
                 var loc = import.Attribute("schemaLocation")?.Value;
+                if (loc != null)
+                {
+                    queue.Enqueue(Path.GetFullPath(Path.Combine(dir, loc)));
+                }
+            }
+
+            // Follow xs:include (same namespace, different file)
+            foreach (var include in doc.Descendants(Xs + "include"))
+            {
+                var loc = include.Attribute("schemaLocation")?.Value;
                 if (loc != null)
                 {
                     queue.Enqueue(Path.GetFullPath(Path.Combine(dir, loc)));
@@ -78,11 +89,11 @@ public static class XsdLoader
     /// <paramref name="rootFileName"/> identifies which file is the root XSD.
     /// Returns parsed documents and prefix maps ready for <see cref="XsdParser"/>.
     /// </summary>
-    public static (Dictionary<string, XDocument> Docs,
+    public static (List<(string Namespace, XDocument Doc)> Docs,
                     Dictionary<XDocument, Dictionary<string, string>> PrefixMaps)
         LoadFromContent(Dictionary<string, string> xsdContentByFileName, string rootFileName)
     {
-        var docs = new Dictionary<string, XDocument>();
+        var docs = new List<(string Namespace, XDocument Doc)>();
         var prefixMaps = new Dictionary<XDocument, Dictionary<string, string>>();
 
         var loaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -101,13 +112,13 @@ public static class XsdLoader
                     .FirstOrDefault(k => k.Equals(fileName, StringComparison.OrdinalIgnoreCase));
                 if (match == null)
                     throw new InvalidOperationException(
-                        $"XSD file '{fileName}' referenced via xs:import but not found in schema set.");
+                        $"XSD file '{fileName}' referenced via xs:import or xs:include but not found in schema set.");
                 content = xsdContentByFileName[match];
             }
 
             var doc = XDocument.Parse(content);
             var targetNs = doc.Root?.Attribute("targetNamespace")?.Value ?? "";
-            docs[targetNs] = doc;
+            docs.Add((targetNs, doc));
 
             // Build prefix map
             var prefixMap = BuildPrefixMap(doc);
@@ -122,6 +133,17 @@ public static class XsdLoader
                     // Normalize to just the filename (strip any remaining path components)
                     var importFileName = Path.GetFileName(loc);
                     queue.Enqueue(importFileName);
+                }
+            }
+
+            // Follow xs:include — schemaLocation should already be bare filenames
+            foreach (var include in doc.Descendants(Xs + "include"))
+            {
+                var loc = include.Attribute("schemaLocation")?.Value;
+                if (loc != null)
+                {
+                    var includeFileName = Path.GetFileName(loc);
+                    queue.Enqueue(includeFileName);
                 }
             }
         }

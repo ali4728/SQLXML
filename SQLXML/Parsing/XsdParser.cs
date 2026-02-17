@@ -10,8 +10,8 @@ public class XsdParser
 
     private const int MaxColumnsPerTable = 300;
 
-    // All loaded XSD documents keyed by their target namespace
-    private readonly Dictionary<string, XDocument> _docs = new();
+    // All loaded XSD documents as (namespace, document) tuples (supports multiple docs per namespace via xs:include)
+    private readonly List<(string Namespace, XDocument Doc)> _docs = new();
 
     // Type dictionary: (namespace, localName) -> XElement for complexType/simpleType
     private readonly Dictionary<(string ns, string name), XElement> _types = new();
@@ -38,18 +38,18 @@ public class XsdParser
     /// Core parse entry point: accepts pre-loaded XSD documents (from DB or disk).
     /// </summary>
     public (List<TableDefinition> Tables, MessageStructure Structure) Parse(
-        Dictionary<string, XDocument> docs,
+        List<(string Namespace, XDocument Doc)> docs,
         Dictionary<XDocument, Dictionary<string, string>> prefixMaps)
     {
-        foreach (var (ns, doc) in docs)
-            _docs[ns] = doc;
+        foreach (var entry in docs)
+            _docs.Add(entry);
         foreach (var (doc, map) in prefixMaps)
             _prefixMaps[doc] = map;
 
         BuildTypeDictionary();
 
         // Dynamic root element discovery: find the first top-level xs:element
-        var rootDoc = _docs.Values.First();
+        var rootDoc = _docs[0].Doc;
         var rootElement = rootDoc.Descendants(Xs + "element")
             .FirstOrDefault(e => e.Parent?.Name == Xs + "schema");
 
@@ -586,6 +586,7 @@ public class XsdParser
     {
         foreach (var (ns, doc) in _docs)
         {
+            // Note: multiple docs may share the same namespace (via xs:include)
             foreach (var ct in doc.Descendants(Xs + "complexType"))
             {
                 var name = ct.Attribute("name")?.Value;
@@ -612,7 +613,7 @@ public class XsdParser
         var localName = StripPrefix(refAttr);
 
         // Search all loaded documents for a top-level xs:element with this name
-        foreach (var doc in _docs.Values)
+        foreach (var (_, doc) in _docs)
         {
             var resolved = doc.Descendants(Xs + "element")
                 .FirstOrDefault(e => e.Parent?.Name == Xs + "schema"
