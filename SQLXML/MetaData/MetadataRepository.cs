@@ -44,18 +44,6 @@ public class MetadataRepository : IDisposable
         var script = File.ReadAllText(scriptPath);
         ExecuteBatches(script);
         EnsureSourceConfigColumn();
-        EnsureTablePrefixColumn();
-    }
-
-    /// <summary>Adds TablePrefix column to existing SQLXML_XsdSchemaSet tables (idempotent migration).</summary>
-    private void EnsureTablePrefixColumn()
-    {
-        const string sql = """
-            IF COL_LENGTH('dbo.SQLXML_XsdSchemaSet','TablePrefix') IS NULL
-                ALTER TABLE dbo.SQLXML_XsdSchemaSet ADD TablePrefix NVARCHAR(100) NULL
-            """;
-        using var cmd = new SqlCommand(sql, _conn, _tx);
-        cmd.ExecuteNonQuery();
     }
 
     /// <summary>Saves a table prefix for the given schema set.</summary>
