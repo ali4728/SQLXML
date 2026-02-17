@@ -44,6 +44,38 @@ public class MetadataRepository : IDisposable
         var script = File.ReadAllText(scriptPath);
         ExecuteBatches(script);
         EnsureSourceConfigColumn();
+        EnsureTablePrefixColumn();
+    }
+
+    /// <summary>Adds TablePrefix column to existing SQLXML_XsdSchemaSet tables (idempotent migration).</summary>
+    private void EnsureTablePrefixColumn()
+    {
+        const string sql = """
+            IF COL_LENGTH('dbo.SQLXML_XsdSchemaSet','TablePrefix') IS NULL
+                ALTER TABLE dbo.SQLXML_XsdSchemaSet ADD TablePrefix NVARCHAR(100) NULL
+            """;
+        using var cmd = new SqlCommand(sql, _conn, _tx);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Saves a table prefix for the given schema set.</summary>
+    public void SaveTablePrefix(long schemaSetId, string prefix)
+    {
+        const string sql = "UPDATE dbo.SQLXML_XsdSchemaSet SET TablePrefix = @Prefix WHERE SchemaSetId = @Id";
+        using var cmd = new SqlCommand(sql, _conn, _tx);
+        cmd.Parameters.AddWithValue("@Id", schemaSetId);
+        cmd.Parameters.AddWithValue("@Prefix", prefix);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Returns the table prefix for the given schema set, or null if not set.</summary>
+    public string? GetTablePrefix(long schemaSetId)
+    {
+        const string sql = "SELECT TablePrefix FROM dbo.SQLXML_XsdSchemaSet WHERE SchemaSetId = @Id";
+        using var cmd = new SqlCommand(sql, _conn, _tx);
+        cmd.Parameters.AddWithValue("@Id", schemaSetId);
+        var result = cmd.ExecuteScalar();
+        return result == null || result == DBNull.Value ? null : (string)result;
     }
 
     /// <summary>Adds SourceConfigJson column to existing SQLXML_XsdSchemaSet tables (idempotent migration).</summary>

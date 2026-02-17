@@ -5,6 +5,7 @@ using SQLXML.Generation;
 using SQLXML.MetaData;
 using SQLXML.Models;
 using SQLXML.Parsing;
+using SQLXML;
 using SQLXML.Processing;
 
 var configuration = new ConfigurationBuilder()
@@ -140,6 +141,7 @@ if (command == "generateddl")
     string? version = null;
     string? outputPath = null;
     string? metadataConnectionString = null;
+    string? tablePrefix = null;
 
     for (int i = 1; i < args.Length; i++)
     {
@@ -156,6 +158,9 @@ if (command == "generateddl")
                 break;
             case "--metadata-connection-string" when i + 1 < args.Length:
                 metadataConnectionString = args[++i];
+                break;
+            case "--table-prefix" when i + 1 < args.Length:
+                tablePrefix = args[++i];
                 break;
         }
     }
@@ -201,6 +206,10 @@ if (command == "generateddl")
 
     var parser = new XsdParser();
     var (tables, _) = parser.Parse(docs, prefixMaps);
+
+    if (!string.IsNullOrWhiteSpace(tablePrefix))
+        TablePrefixHelper.ApplyPrefix(tables, null, tablePrefix);
+
     var sql = SqlGenerator.Generate(tables);
 
     if (outputPath != null)
@@ -238,6 +247,10 @@ if (command == "generateddl")
 
         meta.CompleteGenerationRun(runId, "Completed",
             $"Generated {tables.Count} tables.");
+
+        if (!string.IsNullOrWhiteSpace(tablePrefix))
+            meta.SaveTablePrefix(schemaSetId.Value, TablePrefixHelper.NormalizePrefix(tablePrefix));
+
         Console.WriteLine($"Metadata recorded: SchemaSetId={schemaSetId}, GenerationRunId={runId}");
     }
     catch (Exception ex)
@@ -516,6 +529,11 @@ static (List<TableDefinition>? tables, MessageStructure? structure, MetadataRepo
     var parser = new XsdParser();
     var (tables, structure) = parser.Parse(docs, prefixMaps);
 
+    // Apply table prefix if one was saved during generateddl
+    var savedPrefix = meta.GetTablePrefix(schemaSetId.Value);
+    if (!string.IsNullOrWhiteSpace(savedPrefix))
+        TablePrefixHelper.ApplyPrefix(tables, structure, savedPrefix);
+
     return (tables, structure, meta, schemaSetId.Value);
 }
 
@@ -613,7 +631,7 @@ static void PrintUsage()
     Console.Error.WriteLine("                  [--metadata-connection-string <conn-str>]");
     Console.Error.WriteLine();
     Console.Error.WriteLine("  SQLXML generateddl --schema-name <name> --version <ver> [--output <sql-file>]");
-    Console.Error.WriteLine("                [--metadata-connection-string <conn-str>]");
+    Console.Error.WriteLine("                [--table-prefix <prefix>] [--metadata-connection-string <conn-str>]");
     Console.Error.WriteLine();
     Console.Error.WriteLine("  SQLXML process-file --schema-name <name> --version <ver> --input <xml-folder>");
     Console.Error.WriteLine("                 --connection-string <conn-str> [--metadata-connection-string <conn-str>]");
@@ -625,6 +643,7 @@ static void PrintUsage()
     Console.Error.WriteLine("  --connection-string           Target database for business tables / data loading");
     Console.Error.WriteLine("  --metadata-connection-string  Database for SQLXML_* metadata tables (can be a different server)");
     Console.Error.WriteLine("  --source-config               JSON file with source table settings (stored in metadata at register time)");
+    Console.Error.WriteLine("  --table-prefix                Prefix for all generated table names (e.g., 'marketing' → 'marketing_PID')");
 }
 
 static string NormalizeSchemaName(string name)

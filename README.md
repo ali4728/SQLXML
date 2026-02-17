@@ -76,8 +76,10 @@ Generate DDL from a previously registered schema set.
 
 ```bash
 SQLXML generateddl --schema-name <name> --version <ver> [--output <output.sql>]
-                    [--metadata-connection-string <conn-str>]
+                    [--table-prefix <prefix>] [--metadata-connection-string <conn-str>]
 ```
+
+- `--table-prefix` (optional) adds a prefix to all generated table names (e.g., `--table-prefix marketing` produces `marketing_PID` instead of `PID`). The prefix is saved in metadata so that `process-file` and `process-sql` automatically use it.
 
 **Examples:**
 
@@ -159,6 +161,7 @@ SQLXML process-sql --schema-name ADT_A01 --version v1 \
 | `--schema-name <name>` | `register`, `generateddl`, `process-file`, `process-sql` | Logical name for the schema set (defaults to XSD filename) |
 | `--version <label>` | `register`, `generateddl`, `process-file`, `process-sql` | Version label for the schema set |
 | `--source-config <json-file>` | `register` | JSON file with source table settings for `process-sql` |
+| `--table-prefix <prefix>` | `generateddl` | Prefix for all generated table names (saved in metadata for use by `process-file`/`process-sql`) |
 | `--output <path>` | `generateddl` | Output path for generated SQL script |
 | `--input <folder>` | `process-file` | Folder containing XML files to process |
 | `--connection-string <conn-str>` | `process-file`, `process-sql` | SQL Server connection string for the target database (or set via `DefaultConnection` in appsettings.json) |
