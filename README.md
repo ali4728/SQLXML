@@ -79,7 +79,7 @@ SQLXML generateddl --schema-name <name> --version <ver> [--output <output.sql>]
                     [--table-prefix <prefix>] [--metadata-connection-string <conn-str>]
 ```
 
-- `--table-prefix` (optional) adds a prefix to all generated table names (e.g., `--table-prefix marketing` produces `marketing_PID` instead of `PID`). The prefix is saved in metadata so that `process-file` and `process-sql` automatically use it.
+- `--table-prefix` (optional) adds a prefix to all generated table names (e.g., `--table-prefix marketing` produces `marketing_Orders` instead of `Orders`). The prefix is saved in metadata so that `process-file` and `process-sql` automatically use it.
 
 **Examples:**
 
@@ -136,21 +136,21 @@ SQLXML process-sql --schema-name <name> --version <ver>
 | `sourceConnectionString` | Yes | — | Connection string to the source database containing XML rows |
 | `sourceQuery` | Yes | — | Any valid `SELECT` query; extra `WHERE` conditions are fine |
 | `sourceIdColumn` | No | `"Id"` | Column name used as the row identifier |
-| `sourceXmlColumn` | No | `"HL7XML"` | Column name containing the XML content (default matches the code default) |
+| `sourceXmlColumn` | No | `"XmlContent"` | Column name containing the XML content (default matches the code default) |
 | `sourceUpdateQuery` | No | — | `UPDATE` statement with an `@Id` parameter; executed per row after **all** rows succeed |
 
 **Example end-to-end workflow:**
 
 ```bash
 # 1. Register XSD with source config
-SQLXML register --xsd Schemas/ADT_A01.xsd --schema-name ADT_A01 --version v1 \
+SQLXML register --xsd Schemas/OrderSchema.xsd --schema-name OrderSchema --version v1 \
   --source-config source-config.json
 
 # 2. Generate and apply DDL
-SQLXML generateddl --schema-name ADT_A01 --version v1 --output Tables.sql
+SQLXML generateddl --schema-name OrderSchema --version v1 --output Tables.sql
 
 # 3. Process XML rows from the source table
-SQLXML process-sql --schema-name ADT_A01 --version v1 \
+SQLXML process-sql --schema-name OrderSchema --version v1 \
   --connection-string "Server=localhost;Database=MyData;Trusted_Connection=True;TrustServerCertificate=True"
 ```
 
@@ -178,7 +178,7 @@ The `register` command loads the root XSD and all referenced files (`xs:import` 
 ### Schema Generation
 
 1. The XSD is loaded from the metadata database and all type references are resolved into a complete type dictionary.
-2. Each direct child of the message root with a complex type becomes its own SQL table with an identity PK and a foreign key to the root table.
+2. Each direct child of the document root with a complex type becomes its own SQL table with an identity PK and a foreign key to the root table.
 3. Sub-element singleton complex types are **flattened** into their parent table as columns (up to a configurable depth).
 4. Repeating elements (`maxOccurs > 1` or `unbounded`) get their own child tables with a `RepeatIndex` column.
 5. Column names are derived from the XML path, joined by underscores.

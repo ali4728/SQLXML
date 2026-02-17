@@ -656,7 +656,7 @@ static void PrintUsage()
     Console.Error.WriteLine("  --connection-string           Target database for business tables / data loading");
     Console.Error.WriteLine("  --metadata-connection-string  Database for SQLXML_* metadata tables (can be a different server)");
     Console.Error.WriteLine("  --source-config               JSON file with source table settings (stored in metadata at register time)");
-    Console.Error.WriteLine("  --table-prefix                Prefix for all generated table names (e.g., 'marketing' → 'marketing_PID')");
+    Console.Error.WriteLine("  --table-prefix                Prefix for all generated table names (e.g., 'marketing' → 'marketing_Orders')");
     Console.Error.WriteLine("  --delete-source-files         Delete source XML files after successful processing (Y or N, default N)");
 }
 
