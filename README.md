@@ -37,12 +37,12 @@ Connection strings can be provided via `appsettings.json` or as command-line arg
 }
 ```
 
-- **DefaultConnection** — Target database for business tables and data loading (used by `process`).
+- **DefaultConnection** — Target database for business tables and data loading (used by `process-file` and `process-sql`).
 - **MetadataConnection** — Database for `SQLXML_*` metadata tables (used by all commands).
 
 ## Usage
 
-The tool uses a three-step workflow: **register** an XSD, **generate DDL** from it, then **process** XML files.
+The tool uses a three-step workflow: **register** an XSD, **generate DDL** from it, then **process** XML data (from files or a SQL table).
 
 ### 1. Register XSD Files
 
@@ -50,17 +50,24 @@ Store XSD files (including all imports/includes) in the metadata database.
 
 ```bash
 SQLXML register --xsd <path-to-xsd> [--schema-name <name>] [--version <label>]
+                [--source-config <json-file>]
                 [--metadata-connection-string <conn-str>]
 ```
 
 - `--schema-name` defaults to the root XSD filename (without extension).
 - `--version` defaults to a hash-based label derived from file contents.
+- `--source-config` (optional) stores a JSON file with source table settings for use with `process-sql`.
 - If the same schema name + version already exists, registration is skipped.
 
-**Example:**
+**Examples:**
 
 ```bash
+# Register XSD only
 SQLXML register --xsd Schemas/MySchema.xsd --schema-name MySchema --version v1
+
+# Register XSD with source config for process-sql
+SQLXML register --xsd Schemas/MySchema.xsd --schema-name MySchema --version v1 \
+  --source-config source-config.json
 ```
 
 ### 2. Generate SQL Schema from Registered XSD
@@ -84,19 +91,63 @@ SQLXML generateddl --schema-name MySchema --version v1 --output output/Tables.sq
 
 ### 3. Process XML Files and Load into SQL Server
 
-Parse XML files and insert data into the target database using a registered schema.
+Parse XML files from a folder and insert data into the target database using a registered schema.
 
 ```bash
-SQLXML process --schema-name <name> --version <ver> --input <xml-folder>
-               --connection-string <conn-str> [--metadata-connection-string <conn-str>]
+SQLXML process-file --schema-name <name> --version <ver> --input <xml-folder>
+                    --connection-string <conn-str> [--metadata-connection-string <conn-str>]
 ```
 
 **Example:**
 
 ```bash
-SQLXML process \
+SQLXML process-file \
   --schema-name MySchema --version v1 \
   --input SampleFiles/xml \
+  --connection-string "Server=localhost;Database=MyData;Trusted_Connection=True;TrustServerCertificate=True"
+```
+
+### 4. Process XML from a SQL Table
+
+Read XML content from rows in a SQL table and load them into the target database. The source table connection and query are defined in a **source config** JSON file that must be registered first via `register --source-config`.
+
+```bash
+SQLXML process-sql --schema-name <name> --version <ver>
+                   --connection-string <conn-str> [--metadata-connection-string <conn-str>]
+```
+
+**Source config JSON format:**
+
+```json
+{
+  "sourceConnectionString": "Server=YOUR_SERVER;Database=YOUR_DB;Trusted_Connection=True;TrustServerCertificate=True;",
+  "sourceQuery": "SELECT Id, HL7XML FROM dbo.InboundMessages WHERE ProcessedFlag = 0",
+  "sourceIdColumn": "Id",
+  "sourceXmlColumn": "HL7XML",
+  "sourceUpdateQuery": "UPDATE dbo.InboundMessages SET ProcessedFlag = 1 WHERE Id = @Id"
+}
+```
+
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `sourceConnectionString` | Yes | — | Connection string to the source database containing XML rows |
+| `sourceQuery` | Yes | — | Any valid `SELECT` query; extra `WHERE` conditions are fine |
+| `sourceIdColumn` | No | `"Id"` | Column name used as the row identifier |
+| `sourceXmlColumn` | No | `"HL7XML"` | Column name containing the XML content |
+| `sourceUpdateQuery` | No | — | `UPDATE` statement with an `@Id` parameter; executed per row after **all** rows succeed |
+
+**Example end-to-end workflow:**
+
+```bash
+# 1. Register XSD with source config
+SQLXML register --xsd Schemas/ADT_A01.xsd --schema-name ADT_A01 --version v1 \
+  --source-config source-config.json
+
+# 2. Generate and apply DDL
+SQLXML generateddl --schema-name ADT_A01 --version v1 --output Tables.sql
+
+# 3. Process XML rows from the source table
+SQLXML process-sql --schema-name ADT_A01 --version v1 \
   --connection-string "Server=localhost;Database=MyData;Trusted_Connection=True;TrustServerCertificate=True"
 ```
 
@@ -105,11 +156,12 @@ SQLXML process \
 | Option | Commands | Description |
 |---|---|---|
 | `--xsd <path>` | `register` | Path to the root XSD schema file |
-| `--schema-name <name>` | `register`, `generateddl`, `process` | Logical name for the schema set (defaults to XSD filename) |
-| `--version <label>` | `register`, `generateddl`, `process` | Version label for the schema set |
+| `--schema-name <name>` | `register`, `generateddl`, `process-file`, `process-sql` | Logical name for the schema set (defaults to XSD filename) |
+| `--version <label>` | `register`, `generateddl`, `process-file`, `process-sql` | Version label for the schema set |
+| `--source-config <json-file>` | `register` | JSON file with source table settings for `process-sql` |
 | `--output <path>` | `generateddl` | Output path for generated SQL script |
-| `--input <folder>` | `process` | Folder containing XML files to process |
-| `--connection-string <conn-str>` | `process` | SQL Server connection string for the target database (or set via `DefaultConnection` in appsettings.json) |
+| `--input <folder>` | `process-file` | Folder containing XML files to process |
+| `--connection-string <conn-str>` | `process-file`, `process-sql` | SQL Server connection string for the target database (or set via `DefaultConnection` in appsettings.json) |
 | `--metadata-connection-string <conn-str>` | all | SQL Server connection string for the metadata database (or set via `MetadataConnection` in appsettings.json) |
 
 ## How It Works
@@ -128,16 +180,17 @@ The `register` command loads the root XSD and all referenced files (`xs:import` 
 
 ### XML Processing
 
-1. XML files are discovered in the input folder and processed sequentially.
-2. Each file is parsed into a tree of `RowData` objects matching the generated table structure.
-3. Rows are inserted in dependency order (parent before child) within a single transaction per file.
+1. XML files are discovered in the input folder (`process-file`) or read from a SQL table (`process-sql`) and processed sequentially.
+2. Each XML document is parsed into a tree of `RowData` objects matching the generated table structure.
+3. Rows are inserted in dependency order (parent before child) within a single transaction per document.
 4. Results are logged to the console with per-table row counts and error details.
+5. For `process-sql`, if all rows succeed and a `sourceUpdateQuery` is configured, each source row is marked as processed.
 
 ## Project Structure
 
 ```
 SQLXML/
-├── Program.cs                  # CLI entry point (register, generateddl, process)
+├── Program.cs                  # CLI entry point (register, generateddl, process-file, process-sql)
 ├── Parsing/
 │   ├── XsdParser.cs            # XSD parsing, type resolution, table/column generation
 │   └── XsdLoader.cs            # XSD loading from disk or metadata DB content
