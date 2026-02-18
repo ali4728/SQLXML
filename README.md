@@ -4,6 +4,7 @@ A .NET 8 console application that converts **XSD schemas into SQL Server tables*
 
 ## Features
 
+- **XSD Inference** — Automatically infer an XSD schema from a folder of sample XML files, enabling use without a pre-existing XSD.
 - **Schema Registration** — Store XSD files (with all imports/includes) in a metadata database for versioned, repeatable use.
 - **Schema Generation** — Generate SQL Server `CREATE TABLE` DDL scripts with primary keys, foreign keys, and proper column types from a registered XSD.
 - **XML Data Loading** — Process XML from a folder of files or from rows in a SQL source table, and insert data into SQL Server respecting parent-child relationships and insert ordering.
@@ -42,7 +43,41 @@ Connection strings can be provided via `appsettings.json` or as command-line arg
 
 ## Usage
 
-The tool uses a three-step workflow: **register** an XSD, **generate DDL** from it, then **process** XML data (from files or a SQL table).
+The tool supports an optional **infer-xsd** step (when no XSD exists), followed by a three-step workflow: **register** an XSD, **generate DDL** from it, then **process** XML data (from files or a SQL table).
+
+### 0. Infer XSD from Sample XML Files (Optional)
+
+If you don't have an XSD schema, you can infer one from a folder of sample XML files. The tool merges the structure from all XML files into a single XSD, detecting element types, optional fields, and repeating elements.
+
+```bash
+SQLXML infer-xsd --input <xml-folder> --output <xsd-file>
+```
+
+- `--input` — Folder containing sample XML files to analyze.
+- `--output` — Path where the generated XSD file will be written.
+
+**Example:**
+
+```bash
+SQLXML infer-xsd --input SampleFiles/xml --output Schemas/Inferred.xsd
+```
+
+**Full round-trip example** (infer → register → generate DDL → process):
+
+```bash
+# 0. Infer XSD from sample XML files
+SQLXML infer-xsd --input SampleFiles/xml --output Schemas/Inferred.xsd
+
+# 1. Register the inferred XSD
+SQLXML register --xsd Schemas/Inferred.xsd --schema-name MySchema --version v1
+
+# 2. Generate DDL
+SQLXML generateddl --schema-name MySchema --version v1 --output Tables.sql
+
+# 3. Process XML files
+SQLXML process-file --schema-name MySchema --version v1 --input SampleFiles/xml \
+  --connection-string "Server=localhost;Database=MyData;Trusted_Connection=True;TrustServerCertificate=True"
+```
 
 ### 1. Register XSD Files
 
@@ -163,8 +198,8 @@ SQLXML process-sql --schema-name OrderSchema --version v1 \
 | `--version <label>` | `register`, `generateddl`, `process-file`, `process-sql` | Version label for the schema set |
 | `--source-config <json-file>` | `register` | JSON file with source table settings for `process-sql` |
 | `--table-prefix <prefix>` | `generateddl` | Prefix for all generated table names (saved in metadata for use by `process-file`/`process-sql`) |
-| `--output <path>` | `generateddl` | Output path for generated SQL script |
-| `--input <folder>` | `process-file` | Folder containing XML files to process |
+| `--input <folder>` | `infer-xsd`, `process-file` | Folder containing XML files to analyze or process |
+| `--output <path>` | `infer-xsd`, `generateddl` | Output path for generated XSD or SQL script |
 | `--connection-string <conn-str>` | `process-file`, `process-sql` | SQL Server connection string for the target database (or set via `DefaultConnection` in appsettings.json) |
 | `--delete-source-files <Y\|N>` | `process-file` | Delete source XML files after successful processing (default: N) |
 | `--metadata-connection-string <conn-str>` | all | SQL Server connection string for the metadata database (or set via `MetadataConnection` in appsettings.json) |
@@ -195,7 +230,9 @@ The `register` command loads the root XSD and all referenced files (`xs:import` 
 
 ```
 SQLXML/
-├── Program.cs                  # CLI entry point (register, generateddl, process-file, process-sql)
+├── Program.cs                  # CLI entry point (infer-xsd, register, generateddl, process-file, process-sql)
+├── Inference/
+│   └── XsdInferrer.cs          # XSD inference from sample XML files
 ├── Parsing/
 │   ├── XsdParser.cs            # XSD parsing, type resolution, table/column generation
 │   └── XsdLoader.cs            # XSD loading from disk or metadata DB content

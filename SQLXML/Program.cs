@@ -6,6 +6,7 @@ using SQLXML.MetaData;
 using SQLXML.Models;
 using SQLXML.Parsing;
 using SQLXML;
+using SQLXML.Inference;
 using SQLXML.Processing;
 
 var configuration = new ConfigurationBuilder()
@@ -500,6 +501,80 @@ if (command == "process-sql")
     return results.All(r => r.Success) ? 0 : 1;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// INFER-XSD — infer XSD schema from sample XML files
+// ═══════════════════════════════════════════════════════════════════
+if (command == "infer-xsd")
+{
+    string? inputFolder = null;
+    string? outputPath = null;
+
+    for (int i = 1; i < args.Length; i++)
+    {
+        switch (args[i])
+        {
+            case "--input" when i + 1 < args.Length:
+                inputFolder = args[++i];
+                break;
+            case "--output" when i + 1 < args.Length:
+                outputPath = args[++i];
+                break;
+        }
+    }
+
+    if (inputFolder == null || outputPath == null)
+    {
+        Console.Error.WriteLine("Error: --input and --output are required.");
+        PrintUsage();
+        return 1;
+    }
+
+    if (!Directory.Exists(inputFolder))
+    {
+        Console.Error.WriteLine($"Error: Input folder not found: {inputFolder}");
+        return 1;
+    }
+
+    var xmlFiles = Directory.GetFiles(inputFolder, "*.xml");
+    if (xmlFiles.Length == 0)
+    {
+        Console.Error.WriteLine("Error: No XML files found in input folder.");
+        return 1;
+    }
+
+    var inferrer = new XsdInferrer();
+    int merged = 0;
+    int failed = 0;
+
+    foreach (var xmlFile in xmlFiles)
+    {
+        try
+        {
+            var doc = XDocument.Load(xmlFile);
+            inferrer.MergeDocument(doc);
+            merged++;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: skipping {Path.GetFileName(xmlFile)}: {ex.Message}");
+            failed++;
+        }
+    }
+
+    if (merged == 0)
+    {
+        Console.Error.WriteLine("Error: No XML files could be parsed.");
+        return 1;
+    }
+
+    var xsd = inferrer.GenerateXsd();
+    xsd.Save(outputPath);
+
+    Console.WriteLine($"Inferred XSD written to {outputPath}");
+    Console.WriteLine($"  {merged} file(s) merged, {failed} skipped.");
+    return 0;
+}
+
 Console.Error.WriteLine($"Unknown command: {command}");
 PrintUsage();
 return 1;
@@ -651,6 +726,8 @@ static void PrintUsage()
     Console.Error.WriteLine();
     Console.Error.WriteLine("  SQLXML process-sql --schema-name <name> --version <ver>");
     Console.Error.WriteLine("                 --connection-string <conn-str> [--metadata-connection-string <conn-str>]");
+    Console.Error.WriteLine();
+    Console.Error.WriteLine("  SQLXML infer-xsd --input <xml-folder> --output <xsd-file>");
     Console.Error.WriteLine();
     Console.Error.WriteLine("Options:");
     Console.Error.WriteLine("  --connection-string           Target database for business tables / data loading");
