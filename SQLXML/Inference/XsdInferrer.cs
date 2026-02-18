@@ -150,9 +150,8 @@ public class XsdInferrer
                 var childXsElement = new XElement(Xs + "element",
                     new XAttribute("name", childName));
 
-                // minOccurs
-                if (childNode.FilesWherePresent < _totalDocuments)
-                    childXsElement.SetAttributeValue("minOccurs", "0");
+                // Always mark as optional — sample files may not cover all variations
+                childXsElement.SetAttributeValue("minOccurs", "0");
 
                 // maxOccurs
                 if (childNode.MaxOccurrencesUnderParent > 1)
@@ -177,10 +176,8 @@ public class XsdInferrer
                 new XAttribute("name", attrName),
                 new XAttribute("type", MapToXsdType(attrInfo.Type)));
 
-            if (attrInfo.FilesWherePresent < _totalDocuments)
-                xsAttr.SetAttributeValue("use", "optional");
-            else
-                xsAttr.SetAttributeValue("use", "required");
+            // Always mark as optional — sample files may not cover all variations
+            xsAttr.SetAttributeValue("use", "optional");
 
             complexType.Add(xsAttr);
         }
