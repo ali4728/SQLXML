@@ -9,6 +9,10 @@ public class XsdParser
     private static readonly XNamespace Xs = "http://www.w3.org/2001/XMLSchema";
 
     private const int MaxColumnsPerTable = 300;
+    private const int FlattenDepth = 3;
+    private const int MaxRecursionDepth = 50;
+
+    private int _recursionDepth;
 
     // All loaded XSD documents as (namespace, document) tuples (supports multiple docs per namespace via xs:include)
     private readonly List<(string Namespace, XDocument Doc)> _docs = new();
@@ -105,35 +109,100 @@ public class XsdParser
         return null;
     }
 
-    private void ProcessComplexTypeChildren(XElement complexType, XElement contextElement, TableDefinition currentTable, bool createTablesForSingletons = false)
+    private void ProcessComplexTypeChildren(XElement complexType, XElement contextElement, TableDefinition currentTable, bool createTablesForSingletons = false, HashSet<string>? visitedTypes = null)
     {
-        // Handle xs:sequence
-        var sequence = complexType.Element(Xs + "sequence");
-        if (sequence != null)
+        _recursionDepth++;
+        try
         {
-            ProcessSequenceChildren(sequence, contextElement, currentTable, createTablesForSingletons);
+        if (_recursionDepth > MaxRecursionDepth)
+            return;
+
+        var typeName = complexType.Attribute("name")?.Value;
+        if (typeName != null)
+        {
+            visitedTypes ??= new HashSet<string>();
+            if (visitedTypes.Contains(typeName))
+                return; // cycle — skip entirely
+            visitedTypes = new HashSet<string>(visitedTypes) { typeName };
         }
 
-        // Handle xs:attribute elements
-        foreach (var attr in complexType.Elements(Xs + "attribute"))
+        var (sequence, choice, attrSources) = GetEffectiveContent(complexType);
+
+        // Handle xs:complexContent > xs:extension base type
+        var complexContent = complexType.Element(Xs + "complexContent");
+        if (complexContent != null)
         {
-            var attrName = attr.Attribute("name")?.Value;
-            if (attrName == null) continue;
+            var extension = complexContent.Element(Xs + "extension");
+            if (extension != null)
+                ProcessBaseType(extension, contextElement, currentTable, createTablesForSingletons, visitedTypes);
+        }
 
-            var attrType = attr.Attribute("type")?.Value;
-            var sqlType = attrType != null ? SqlGenerator.GetSqlType(StripPrefix(attrType)) : "NVARCHAR(MAX)";
+        // Handle xs:sequence
+        if (sequence != null)
+        {
+            ProcessSequenceChildren(sequence, contextElement, currentTable, createTablesForSingletons, visitedTypes);
+        }
 
-            currentTable.Columns.Add(new ColumnDefinition
+        // Handle xs:choice
+        if (choice != null)
+        {
+            ProcessSequenceChildren(choice, contextElement, currentTable, false, visitedTypes);
+        }
+
+        // Handle xs:attribute elements from all sources (complexType itself + derived element)
+        foreach (var source in attrSources)
+        {
+            foreach (var attr in source.Elements(Xs + "attribute"))
             {
-                ColumnName = UniqueColumnName(currentTable, attrName),
-                SqlType = sqlType,
-                IsNullable = attr.Attribute("use")?.Value != "required",
-                XmlPath = new List<string> { "@" + attrName }
-            });
+                var attrName = attr.Attribute("name")?.Value;
+                if (attrName == null) continue;
+
+                var attrType = attr.Attribute("type")?.Value;
+                var sqlType = attrType != null ? SqlGenerator.GetSqlType(StripPrefix(attrType)) : "NVARCHAR(MAX)";
+
+                currentTable.Columns.Add(new ColumnDefinition
+                {
+                    ColumnName = UniqueColumnName(currentTable, attrName),
+                    SqlType = sqlType,
+                    IsNullable = attr.Attribute("use")?.Value != "required",
+                    XmlPath = new List<string> { "@" + attrName }
+                });
+            }
+
+            // Handle xs:attributeGroup ref
+            foreach (var attrGroup in source.Elements(Xs + "attributeGroup"))
+            {
+                var refAttr = attrGroup.Attribute("ref")?.Value;
+                if (refAttr == null) continue;
+                var resolved = ResolveAttributeGroup(StripPrefix(refAttr));
+                if (resolved == null) continue;
+
+                foreach (var attr in resolved.Elements(Xs + "attribute"))
+                {
+                    var attrName = attr.Attribute("name")?.Value;
+                    if (attrName == null) continue;
+
+                    var attrType = attr.Attribute("type")?.Value;
+                    var sqlType = attrType != null ? SqlGenerator.GetSqlType(StripPrefix(attrType)) : "NVARCHAR(MAX)";
+
+                    currentTable.Columns.Add(new ColumnDefinition
+                    {
+                        ColumnName = UniqueColumnName(currentTable, attrName),
+                        SqlType = sqlType,
+                        IsNullable = attr.Attribute("use")?.Value != "required",
+                        XmlPath = new List<string> { "@" + attrName }
+                    });
+                }
+            }
+        }
+        }
+        finally
+        {
+            _recursionDepth--;
         }
     }
 
-    private void ProcessSequenceChildren(XElement sequence, XElement contextElement, TableDefinition parentTable, bool createTablesForSingletons = false)
+    private void ProcessSequenceChildren(XElement sequence, XElement contextElement, TableDefinition parentTable, bool createTablesForSingletons = false, HashSet<string>? visitedTypes = null)
     {
         // First pass: count duplicate element names for disambiguation
         var nameCountMap = new Dictionary<string, int>();
@@ -170,6 +239,21 @@ public class XsdParser
                     tableName = $"{name}_{idx + 1}";
                 }
 
+                // Cycle detection: if this complex type is already in the visited set, store as XML column
+                var childTypeName = complexType?.Attribute("name")?.Value;
+                if (complexType != null && childTypeName != null && visitedTypes != null && visitedTypes.Contains(childTypeName))
+                {
+                    // Store recursive type reference as XML column
+                    parentTable.Columns.Add(new ColumnDefinition
+                    {
+                        ColumnName = UniqueColumnName(parentTable, name),
+                        SqlType = "NVARCHAR(MAX)",
+                        IsNullable = true,
+                        XmlPath = new List<string> { name }
+                    });
+                    continue;
+                }
+
                 if (isRepeating)
                 {
                     // CREATE CHILD TABLE
@@ -180,7 +264,7 @@ public class XsdParser
 
                     if (complexType != null)
                     {
-                        ProcessComplexTypeChildren(complexType, resolvedChild, childTable);
+                        ProcessComplexTypeChildren(complexType, resolvedChild, childTable, false, visitedTypes);
                     }
                     else
                     {
@@ -216,7 +300,8 @@ public class XsdParser
                         childTable.XmlElementName = name;
                         childTable.ParentTableName = parentTable.TableName;
                         childTable.ParentXmlFieldName = name;
-                        ProcessComplexTypeChildren(complexType, resolvedChild, childTable);
+
+                        ProcessComplexTypeChildren(complexType, resolvedChild, childTable, false, visitedTypes);
 
                         _messageStructure.Slots.Add(new MessageSlot
                         {
@@ -228,7 +313,7 @@ public class XsdParser
                     else
                     {
                         // FLATTEN singleton complex type into parent table
-                        FlattenComplexType(complexType, resolvedChild, parentTable, name, new List<string> { name }, new List<string> { name });
+                        FlattenComplexType(complexType, resolvedChild, parentTable, name, new List<string> { name }, new List<string> { name }, 0, visitedTypes);
                     }
                 }
                 else
@@ -250,107 +335,224 @@ public class XsdParser
                 // Nested xs:sequence (group)
                 if (IsRepeating(child))
                 {
-                    var groupSlot = ProcessGroup(child, parentTable.TableName, allUsedNames);
+                    var groupSlot = ProcessGroup(child, parentTable.TableName, allUsedNames, visitedTypes);
                     if (groupSlot != null)
                         _messageStructure.Slots.Add(groupSlot);
                 }
                 else
                 {
                     // Non-repeating nested sequence - just process children inline
-                    ProcessSequenceChildren(child, contextElement, parentTable);
+                    ProcessSequenceChildren(child, contextElement, parentTable, false, visitedTypes);
                 }
+            }
+            else if (child.Name == Xs + "choice")
+            {
+                // xs:choice — process children as nullable alternatives
+                ProcessSequenceChildren(child, contextElement, parentTable, false, visitedTypes);
             }
         }
     }
 
-    private void FlattenComplexType(XElement complexType, XElement contextElement, TableDefinition table, string prefix, List<string> xmlPath, List<string>? containerPath = null)
+    private void FlattenComplexType(XElement complexType, XElement contextElement, TableDefinition table, string prefix, List<string> xmlPath, List<string>? containerPath = null, int depth = 0, HashSet<string>? visitedTypes = null)
     {
-        var currentContainerPath = containerPath ?? new List<string>();
-        var seq = complexType.Element(Xs + "sequence");
-        if (seq != null)
+        _recursionDepth++;
+        try
         {
-            foreach (var el in seq.Elements(Xs + "element"))
+        if (_recursionDepth > MaxRecursionDepth)
+            return;
+
+        var typeName = complexType.Attribute("name")?.Value;
+        visitedTypes ??= new HashSet<string>();
+
+        if (typeName != null)
+        {
+            if (visitedTypes.Contains(typeName))
             {
-                var (resolvedEl, elName) = ResolveElement(el);
-                if (elName == "Unknown") continue;
-
-                var colName = $"{prefix}_{elName}";
-                var childXmlPath = new List<string>(xmlPath) { elName };
-
-                var isRepeating = IsRepeating(el);
-                var elComplexType = GetComplexType(resolvedEl);
-
-                if (isRepeating)
+                // Cycle detected at entry — bail out with XML column
+                table.Columns.Add(new ColumnDefinition
                 {
-                    // Repeating element inside a flattened scope — must create a child table
-                    var childTable = CreateChildTable(elName, table.TableName, isRepeating: true);
-                    childTable.XmlElementName = elName;
-                    childTable.ParentTableName = table.TableName;
-                    childTable.ParentXmlFieldName = elName;
-                    childTable.XmlContainerPath = new List<string>(currentContainerPath);
+                    ColumnName = UniqueColumnName(table, prefix),
+                    SqlType = "NVARCHAR(MAX)",
+                    IsNullable = true,
+                    XmlPath = new List<string>(xmlPath)
+                });
+                return;
+            }
+            visitedTypes = new HashSet<string>(visitedTypes) { typeName };
+        }
 
-                    if (elComplexType != null)
-                    {
-                        ProcessComplexTypeChildren(elComplexType, resolvedEl, childTable);
-                    }
-                    else
-                    {
-                        var elTypeAttr = resolvedEl.Attribute("type")?.Value;
-                        var sqlType = elTypeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(elTypeAttr)) : "NVARCHAR(MAX)";
-                        childTable.Columns.Add(new ColumnDefinition
-                        {
-                            ColumnName = "Value",
-                            SqlType = sqlType,
-                            IsNullable = true,
-                            XmlPath = childXmlPath
-                        });
-                    }
+        var currentContainerPath = containerPath ?? new List<string>();
+        var (seq, choice, attrSources) = GetEffectiveContent(complexType);
 
-                    // No slot addition here — child field tables are discovered
-                    // via _childFieldTables in XmlProcessor.ExtractSegmentRow
+        // Handle xs:complexContent > xs:extension base type
+        var complexContent = complexType.Element(Xs + "complexContent");
+        if (complexContent != null)
+        {
+            var extension = complexContent.Element(Xs + "extension");
+            if (extension != null)
+                FlattenBaseType(extension, contextElement, table, prefix, xmlPath, containerPath, depth, visitedTypes);
+        }
+
+        // Process elements from sequence and/or choice
+        var elementSources = new List<XElement>();
+        if (seq != null) elementSources.Add(seq);
+        if (choice != null) elementSources.Add(choice);
+
+        foreach (var source in elementSources)
+        {
+            foreach (var el in source.Elements())
+            {
+                if (el.Name == Xs + "element")
+                {
+                    FlattenElement(el, contextElement, table, prefix, xmlPath, currentContainerPath, depth, visitedTypes);
                 }
-                else if (elComplexType != null)
+                else if (el.Name == Xs + "choice")
                 {
-                    // Singleton complex type — continue flattening, tracking the container path
-                    var nestedContainerPath = new List<string>(currentContainerPath) { elName };
-                    FlattenComplexType(elComplexType, resolvedEl, table, colName, childXmlPath, nestedContainerPath);
+                    // Nested choice within sequence
+                    foreach (var choiceEl in el.Elements(Xs + "element"))
+                    {
+                        FlattenElement(choiceEl, contextElement, table, prefix, xmlPath, currentContainerPath, depth, visitedTypes);
+                    }
                 }
-                else
+            }
+        }
+
+        // Handle xs:attribute elements from all sources
+        foreach (var source in attrSources)
+        {
+            foreach (var attr in source.Elements(Xs + "attribute"))
+            {
+                var attrName = attr.Attribute("name")?.Value;
+                if (attrName == null) continue;
+
+                var attrType = attr.Attribute("type")?.Value;
+                var sqlType = attrType != null ? SqlGenerator.GetSqlType(StripPrefix(attrType)) : "NVARCHAR(MAX)";
+                var colName = $"{prefix}_{attrName}";
+
+                table.Columns.Add(new ColumnDefinition
                 {
-                    var elTypeAttr = resolvedEl.Attribute("type")?.Value;
-                    var sqlType = elTypeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(elTypeAttr)) : "NVARCHAR(MAX)";
+                    ColumnName = UniqueColumnName(table, colName),
+                    SqlType = sqlType,
+                    IsNullable = attr.Attribute("use")?.Value != "required",
+                    XmlPath = new List<string>(xmlPath) { "@" + attrName }
+                });
+            }
+
+            // Handle xs:attributeGroup ref
+            foreach (var attrGroup in source.Elements(Xs + "attributeGroup"))
+            {
+                var refAttr = attrGroup.Attribute("ref")?.Value;
+                if (refAttr == null) continue;
+                var resolved = ResolveAttributeGroup(StripPrefix(refAttr));
+                if (resolved == null) continue;
+
+                foreach (var attr in resolved.Elements(Xs + "attribute"))
+                {
+                    var attrName = attr.Attribute("name")?.Value;
+                    if (attrName == null) continue;
+
+                    var attrType = attr.Attribute("type")?.Value;
+                    var sqlType = attrType != null ? SqlGenerator.GetSqlType(StripPrefix(attrType)) : "NVARCHAR(MAX)";
+                    var colName = $"{prefix}_{attrName}";
+
                     table.Columns.Add(new ColumnDefinition
                     {
                         ColumnName = UniqueColumnName(table, colName),
                         SqlType = sqlType,
-                        IsNullable = true,
-                        XmlPath = childXmlPath
+                        IsNullable = attr.Attribute("use")?.Value != "required",
+                        XmlPath = new List<string>(xmlPath) { "@" + attrName }
                     });
                 }
             }
         }
-
-        // Handle xs:attribute elements within the complex type
-        foreach (var attr in complexType.Elements(Xs + "attribute"))
+        }
+        finally
         {
-            var attrName = attr.Attribute("name")?.Value;
-            if (attrName == null) continue;
+            _recursionDepth--;
+        }
+    }
 
-            var attrType = attr.Attribute("type")?.Value;
-            var sqlType = attrType != null ? SqlGenerator.GetSqlType(StripPrefix(attrType)) : "NVARCHAR(MAX)";
-            var colName = $"{prefix}_{attrName}";
+    /// <summary>
+    /// Flattens a single xs:element within a FlattenComplexType context, with depth/cycle guards.
+    /// </summary>
+    private void FlattenElement(XElement el, XElement contextElement, TableDefinition table,
+        string prefix, List<string> xmlPath, List<string> currentContainerPath,
+        int depth, HashSet<string> visitedTypes)
+    {
+        var (resolvedEl, elName) = ResolveElement(el);
+        if (elName == "Unknown") return;
 
+        var colName = $"{prefix}_{elName}";
+        var childXmlPath = new List<string>(xmlPath) { elName };
+
+        var isRepeating = IsRepeating(el);
+        var elComplexType = GetComplexType(resolvedEl);
+
+        if (isRepeating)
+        {
+            // Repeating element inside a flattened scope — must create a child table
+            var childTable = CreateChildTable(elName, table.TableName, isRepeating: true);
+            childTable.XmlElementName = elName;
+            childTable.ParentTableName = table.TableName;
+            childTable.ParentXmlFieldName = elName;
+            childTable.XmlContainerPath = new List<string>(currentContainerPath);
+
+            if (elComplexType != null)
+            {
+                ProcessComplexTypeChildren(elComplexType, resolvedEl, childTable, false, visitedTypes);
+            }
+            else
+            {
+                var elTypeAttr = resolvedEl.Attribute("type")?.Value;
+                var sqlType = elTypeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(elTypeAttr)) : "NVARCHAR(MAX)";
+                childTable.Columns.Add(new ColumnDefinition
+                {
+                    ColumnName = "Value",
+                    SqlType = sqlType,
+                    IsNullable = true,
+                    XmlPath = childXmlPath
+                });
+            }
+        }
+        else if (elComplexType != null)
+        {
+            var childTypeName = elComplexType.Attribute("name")?.Value;
+
+            // Detect cycle or depth limit exceeded → store as XML column
+            if (depth >= FlattenDepth || (childTypeName != null && visitedTypes.Contains(childTypeName)))
+            {
+                table.Columns.Add(new ColumnDefinition
+                {
+                    ColumnName = UniqueColumnName(table, colName),
+                    SqlType = "NVARCHAR(MAX)",
+                    IsNullable = true,
+                    XmlPath = childXmlPath
+                });
+            }
+            else
+            {
+                // Singleton complex type — continue flattening, tracking the container path
+                var nestedContainerPath = new List<string>(currentContainerPath) { elName };
+                var newVisited = new HashSet<string>(visitedTypes);
+                if (childTypeName != null) newVisited.Add(childTypeName);
+                FlattenComplexType(elComplexType, resolvedEl, table, colName, childXmlPath, nestedContainerPath, depth + 1, newVisited);
+            }
+        }
+        else
+        {
+            var elTypeAttr = resolvedEl.Attribute("type")?.Value;
+            var sqlType = elTypeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(elTypeAttr)) : "NVARCHAR(MAX)";
             table.Columns.Add(new ColumnDefinition
             {
                 ColumnName = UniqueColumnName(table, colName),
                 SqlType = sqlType,
-                IsNullable = attr.Attribute("use")?.Value != "required",
-                XmlPath = new List<string>(xmlPath) { "@" + attrName }
+                IsNullable = true,
+                XmlPath = childXmlPath
             });
         }
     }
 
-    private MessageSlot? ProcessGroup(XElement groupSequence, string parentTableName, HashSet<string> allUsedNames)
+    private MessageSlot? ProcessGroup(XElement groupSequence, string parentTableName, HashSet<string> allUsedNames, HashSet<string>? visitedTypes = null)
     {
         var elements = groupSequence.Elements(Xs + "element").ToList();
         if (elements.Count == 0) return null;
@@ -366,7 +568,7 @@ public class XsdParser
         var leadComplexType = GetComplexType(resolvedLead);
         if (leadComplexType != null)
         {
-            ProcessComplexTypeChildren(leadComplexType, resolvedLead, leadTable);
+            ProcessComplexTypeChildren(leadComplexType, resolvedLead, leadTable, false, visitedTypes);
         }
 
         var groupSlot = new MessageSlot
@@ -396,7 +598,7 @@ public class XsdParser
             var childComplexType = GetComplexType(resolvedGroupChild);
             if (childComplexType != null)
             {
-                ProcessComplexTypeChildren(childComplexType, resolvedGroupChild, childTable);
+                ProcessComplexTypeChildren(childComplexType, resolvedGroupChild, childTable, false, visitedTypes);
             }
 
             groupSlot.GroupChildren.Add(new MessageSlot
@@ -581,6 +783,93 @@ public class XsdParser
         }
     }
 
+
+    /// <summary>
+    /// Resolves an xs:attributeGroup by name from loaded XSD documents.
+    /// </summary>
+    private XElement? ResolveAttributeGroup(string name)
+    {
+        foreach (var (_, doc) in _docs)
+        {
+            var ag = doc.Descendants(Xs + "attributeGroup")
+                .FirstOrDefault(e => e.Parent?.Name == Xs + "schema"
+                                  && e.Attribute("name")?.Value == name);
+            if (ag != null) return ag;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Returns the effective sequence, choice, and attribute source from a complexType,
+    /// handling xs:complexContent/extension/restriction transparently.
+    /// Also processes base type content for extensions.
+    /// </summary>
+    private (XElement? Sequence, XElement? Choice, List<XElement> AttributeSources)
+        GetEffectiveContent(XElement complexType)
+    {
+        var sources = new List<XElement> { complexType };
+        var sequence = complexType.Element(Xs + "sequence");
+        var choice = complexType.Element(Xs + "choice");
+
+        var complexContent = complexType.Element(Xs + "complexContent");
+        if (complexContent != null)
+        {
+            var extension = complexContent.Element(Xs + "extension");
+            var restriction = complexContent.Element(Xs + "restriction");
+            var derived = extension ?? restriction;
+            if (derived != null)
+            {
+                sources.Add(derived);
+                sequence ??= derived.Element(Xs + "sequence");
+                choice ??= derived.Element(Xs + "choice");
+            }
+        }
+
+        return (sequence, choice, sources);
+    }
+
+    /// <summary>
+    /// Processes the base type of an xs:extension element, if present.
+    /// </summary>
+    private void ProcessBaseType(XElement extensionOrRestriction, XElement contextElement,
+        TableDefinition table, bool createTablesForSingletons, HashSet<string>? visitedTypes)
+    {
+        var baseTypeRef = extensionOrRestriction.Attribute("base")?.Value;
+        if (baseTypeRef == null) return;
+
+        var baseType = ResolveTypeRef(baseTypeRef, extensionOrRestriction);
+        if (baseType != null && IsComplexType(baseType))
+        {
+            var baseTypeName = baseType.Attribute("name")?.Value;
+            if (baseTypeName != null && visitedTypes != null && visitedTypes.Contains(baseTypeName))
+                return; // cycle detected in base type chain
+            var newVisited = new HashSet<string>(visitedTypes ?? Enumerable.Empty<string>());
+            if (baseTypeName != null) newVisited.Add(baseTypeName);
+            ProcessComplexTypeChildren(baseType, contextElement, table, createTablesForSingletons, newVisited);
+        }
+    }
+
+    /// <summary>
+    /// Processes the base type for flattening context.
+    /// </summary>
+    private void FlattenBaseType(XElement extensionOrRestriction, XElement contextElement,
+        TableDefinition table, string prefix, List<string> xmlPath,
+        List<string>? containerPath, int depth, HashSet<string> visitedTypes)
+    {
+        var baseTypeRef = extensionOrRestriction.Attribute("base")?.Value;
+        if (baseTypeRef == null) return;
+
+        var baseType = ResolveTypeRef(baseTypeRef, extensionOrRestriction);
+        if (baseType != null && IsComplexType(baseType))
+        {
+            var baseTypeName = baseType.Attribute("name")?.Value;
+            if (baseTypeName != null && visitedTypes.Contains(baseTypeName))
+                return;
+            var newVisited = new HashSet<string>(visitedTypes);
+            if (baseTypeName != null) newVisited.Add(baseTypeName);
+            FlattenComplexType(baseType, contextElement, table, prefix, xmlPath, containerPath, depth, newVisited);
+        }
+    }
 
     private void BuildTypeDictionary()
     {
