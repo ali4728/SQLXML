@@ -362,7 +362,8 @@ if (command == "process-file")
         }
     }
 
-    PrintResults(results);
+    var verboseOutput = string.Equals(configuration["Processing:VerboseOutput"], "true", StringComparison.OrdinalIgnoreCase);
+    PrintResults(results, verboseOutput);
     return results.All(r => r.Success) ? 0 : 1;
 }
 
@@ -474,7 +475,8 @@ if (command == "process-sql")
         results.Add(result);
     }
 
-    PrintResults(results);
+    var verboseOutput = string.Equals(configuration["Processing:VerboseOutput"], "true", StringComparison.OrdinalIgnoreCase);
+    PrintResults(results, verboseOutput);
 
     // If all rows succeeded and a source update query was provided, mark source rows as processed
     if (results.All(r => r.Success) && sourceConfig.SourceUpdateQuery != null)
@@ -684,27 +686,75 @@ static ProcessingResult ProcessSingleXml(
     return result;
 }
 
-static void PrintResults(List<ProcessingResult> results)
+static void PrintResults(List<ProcessingResult> results, bool verbose)
 {
     Console.WriteLine();
     Console.WriteLine("Processing Results:");
     Console.WriteLine(new string('-', 60));
 
-    foreach (var result in results)
+    if (verbose)
     {
-        var status = result.Success ? "Success" : "FAILED";
-        Console.WriteLine($"  {result.FileName}: {status}");
-
-        if (result.Success)
+        foreach (var result in results)
         {
-            foreach (var kv in result.RowCounts.OrderBy(kv => kv.Key))
+            var status = result.Success ? "Success" : "FAILED";
+            Console.WriteLine($"  {result.FileName}: {status}");
+
+            if (result.Success)
             {
-                Console.WriteLine($"    {kv.Key}: {kv.Value} row(s)");
+                foreach (var kv in result.RowCounts.OrderBy(kv => kv.Key))
+                {
+                    Console.WriteLine($"    {kv.Key}: {kv.Value} row(s)");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"    Error: {result.ErrorMessage}");
             }
         }
-        else
+
+        Console.WriteLine();
+        Console.WriteLine(new string('-', 60));
+    }
+
+    var succeeded = results.Count(r => r.Success);
+    var failed = results.Count(r => !r.Success);
+    Console.WriteLine($"  {results.Count} file(s) processed: {succeeded} succeeded, {failed} failed.");
+
+    // Aggregate row counts across all files
+    var aggregated = new Dictionary<string, long>();
+    foreach (var result in results.Where(r => r.Success))
+    {
+        foreach (var kv in result.RowCounts)
         {
-            Console.WriteLine($"    Error: {result.ErrorMessage}");
+            if (aggregated.ContainsKey(kv.Key))
+                aggregated[kv.Key] += kv.Value;
+            else
+                aggregated[kv.Key] = kv.Value;
+        }
+    }
+
+    if (aggregated.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("  Row totals:");
+        long grandTotal = 0;
+        foreach (var kv in aggregated.OrderBy(kv => kv.Key))
+        {
+            Console.WriteLine($"    {kv.Key}: {kv.Value} row(s)");
+            grandTotal += kv.Value;
+        }
+        Console.WriteLine($"  Total: {grandTotal} row(s)");
+    }
+
+    // List failed files
+    var failures = results.Where(r => !r.Success).ToList();
+    if (failures.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("  Failed files:");
+        foreach (var f in failures)
+        {
+            Console.WriteLine($"    {f.FileName}: {f.ErrorMessage}");
         }
     }
 }
