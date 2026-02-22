@@ -226,7 +226,7 @@ public class XsdParser
             if (child.Name == Xs + "element")
             {
                 var (resolvedChild, name) = ResolveElement(child);
-                var isRepeating = IsRepeating(child);
+                var isRepeating = IsRepeating(child) || IsRepeating(sequence);
                 var complexType = GetComplexType(resolvedChild);
 
                 // Resolve table name (handle duplicates like ARV×2 in HL7)
@@ -331,7 +331,42 @@ public class XsdParser
                 }
                 else if (complexType != null)
                 {
-                    if (createTablesForSingletons)
+                    // Check if this is a reused complex type → shared table (even for singletons)
+                    var resolvedName2 = resolvedChild.Attribute("name")?.Value ?? name;
+                    var childTypeName2 = complexType.Attribute("name")?.Value ?? resolvedName2;
+                    if (IsReusedType(childTypeName2))
+                    {
+                        // Shared table path (same as repeating branch but without RepeatIndex)
+                        TableDefinition sharedTable;
+                        if (_sharedTables.TryGetValue(childTypeName2, out var existing))
+                        {
+                            sharedTable = existing;
+                        }
+                        else
+                        {
+                            sharedTable = CreateSharedChildTable(resolvedName2);
+                            sharedTable.XmlElementName = resolvedName2;
+                            ProcessComplexTypeChildren(complexType, resolvedChild, sharedTable, false, visitedTypes);
+                            _sharedTables[childTypeName2] = sharedTable;
+                        }
+
+                        sharedTable.SharedParentMappings.Add(new SharedParentMapping
+                        {
+                            ParentTableName = parentTable.TableName,
+                            ParentXmlFieldName = name
+                        });
+
+                        if (createTablesForSingletons)
+                        {
+                            _messageStructure.Slots.Add(new MessageSlot
+                            {
+                                XmlElementName = name,
+                                TableName = sharedTable.TableName,
+                                IsRepeating = false
+                            });
+                        }
+                    }
+                    else if (createTablesForSingletons)
                     {
                         if (IsWrapperElement(complexType))
                         {
