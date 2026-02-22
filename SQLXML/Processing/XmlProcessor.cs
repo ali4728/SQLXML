@@ -144,6 +144,7 @@ public class XmlProcessor
         if (el.Name.LocalName != slot.XmlElementName) return;
 
         var row = ExtractSegmentRow(el, slot.TableName);
+        SetSharedTableParentType(row, parentRow);
         parentRow.ChildRows.Add(row);
         idx++;
     }
@@ -155,6 +156,7 @@ public class XmlProcessor
         {
             var row = ExtractSegmentRow(xmlChildren[idx], slot.TableName);
             row.RepeatIndex = repeatIndex++;
+            SetSharedTableParentType(row, parentRow);
             parentRow.ChildRows.Add(row);
             idx++;
         }
@@ -169,6 +171,7 @@ public class XmlProcessor
             // Extract lead segment
             var leadRow = ExtractSegmentRow(xmlChildren[idx], groupSlot.TableName);
             leadRow.RepeatIndex = repeatIndex++;
+            SetSharedTableParentType(leadRow, messageRow);
             messageRow.ChildRows.Add(leadRow);
             idx++;
 
@@ -184,6 +187,7 @@ public class XmlProcessor
                         {
                             var childRow = ExtractSegmentRow(xmlChildren[idx], childSlot.TableName);
                             childRow.RepeatIndex = childRepeatIndex++;
+                            SetSharedTableParentType(childRow, leadRow);
                             leadRow.ChildRows.Add(childRow);
                             idx++;
                         }
@@ -193,12 +197,21 @@ public class XmlProcessor
                         if (idx < xmlChildren.Count && xmlChildren[idx].Name.LocalName == childSlot.XmlElementName)
                         {
                             var childRow = ExtractSegmentRow(xmlChildren[idx], childSlot.TableName);
+                            SetSharedTableParentType(childRow, leadRow);
                             leadRow.ChildRows.Add(childRow);
                             idx++;
                         }
                     }
                 }
             }
+        }
+    }
+
+    private void SetSharedTableParentType(RowData row, RowData parentRow)
+    {
+        if (_tablesByName.TryGetValue(row.TableName, out var tableDef) && tableDef.IsSharedTable)
+        {
+            row.Values["ParentType"] = parentRow.TableName;
         }
     }
 
