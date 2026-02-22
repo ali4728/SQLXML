@@ -28,6 +28,10 @@ public class XsdParser
     private readonly HashSet<string> _createdTableNames = new(StringComparer.OrdinalIgnoreCase);
     private int _sortOrder;
 
+    // Reference counting for shared/reused complex type detection
+    private readonly Dictionary<string, int> _refCounts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TableDefinition> _sharedTables = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Convenience overload: loads XSD from disk, then parses.
     /// </summary>
@@ -51,6 +55,7 @@ public class XsdParser
             _prefixMaps[doc] = map;
 
         BuildTypeDictionary();
+        CountReferences();
 
         // Dynamic root element discovery: find the first top-level xs:element
         var rootDoc = _docs[0].Doc;
@@ -256,59 +261,122 @@ public class XsdParser
 
                 if (isRepeating)
                 {
-                    // CREATE CHILD TABLE
-                    var childTable = CreateChildTable(tableName, parentTable.TableName, isRepeating: true);
-                    childTable.XmlElementName = name;
-                    childTable.ParentTableName = parentTable.TableName;
-                    childTable.ParentXmlFieldName = name;
-
-                    if (complexType != null)
+                    // Check if this is a reused complex type → shared table
+                    var resolvedName2 = resolvedChild.Attribute("name")?.Value ?? name;
+                    var childTypeName2 = complexType?.Attribute("name")?.Value ?? resolvedName2;
+                    if (complexType != null && IsReusedType(childTypeName2))
                     {
-                        ProcessComplexTypeChildren(complexType, resolvedChild, childTable, false, visitedTypes);
+                        // Shared table path
+                        TableDefinition sharedTable;
+                        if (_sharedTables.TryGetValue(childTypeName2, out var existing))
+                        {
+                            sharedTable = existing;
+                        }
+                        else
+                        {
+                            sharedTable = CreateSharedChildTable(resolvedName2);
+                            sharedTable.XmlElementName = resolvedName2;
+                            ProcessComplexTypeChildren(complexType, resolvedChild, sharedTable, false, visitedTypes);
+                            _sharedTables[childTypeName2] = sharedTable;
+                        }
+
+                        sharedTable.SharedParentMappings.Add(new SharedParentMapping
+                        {
+                            ParentTableName = parentTable.TableName,
+                            ParentXmlFieldName = name,
+                            XmlContainerPath = new List<string>()
+                        });
+
+                        if (createTablesForSingletons)
+                        {
+                            _messageStructure.Slots.Add(new MessageSlot
+                            {
+                                XmlElementName = name,
+                                TableName = sharedTable.TableName,
+                                IsRepeating = true
+                            });
+                        }
                     }
                     else
                     {
-                        // Simple repeating element - add a Value column
-                        var typeAttr = resolvedChild.Attribute("type")?.Value;
-                        var sqlType = typeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(typeAttr)) : "NVARCHAR(MAX)";
-                        childTable.Columns.Add(new ColumnDefinition
-                        {
-                            ColumnName = "Value",
-                            SqlType = sqlType,
-                            IsNullable = true,
-                            XmlPath = new List<string> { name }
-                        });
-                    }
+                        // CREATE CHILD TABLE (non-shared path)
+                        var childTable = CreateChildTable(tableName, parentTable.TableName, isRepeating: true);
+                        childTable.XmlElementName = name;
+                        childTable.ParentTableName = parentTable.TableName;
+                        childTable.ParentXmlFieldName = name;
 
-                    // Only add to root-level message structure, not for nested tables
-                    if (createTablesForSingletons)
-                    {
-                        _messageStructure.Slots.Add(new MessageSlot
+                        if (complexType != null)
                         {
-                            XmlElementName = name,
-                            TableName = tableName,
-                            IsRepeating = true
-                        });
+                            ProcessComplexTypeChildren(complexType, resolvedChild, childTable, false, visitedTypes);
+                        }
+                        else
+                        {
+                            // Simple repeating element - add a Value column
+                            var typeAttr = resolvedChild.Attribute("type")?.Value;
+                            var sqlType = typeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(typeAttr)) : "NVARCHAR(MAX)";
+                            childTable.Columns.Add(new ColumnDefinition
+                            {
+                                ColumnName = "Value",
+                                SqlType = sqlType,
+                                IsNullable = true,
+                                XmlPath = new List<string> { name }
+                            });
+                        }
+
+                        // Only add to root-level message structure, not for nested tables
+                        if (createTablesForSingletons)
+                        {
+                            _messageStructure.Slots.Add(new MessageSlot
+                            {
+                                XmlElementName = name,
+                                TableName = tableName,
+                                IsRepeating = true
+                            });
+                        }
                     }
                 }
                 else if (complexType != null)
                 {
                     if (createTablesForSingletons)
                     {
-                        // Create 1:1 child table for singleton segment
-                        var childTable = CreateChildTable(tableName, parentTable.TableName, isRepeating: false);
-                        childTable.XmlElementName = name;
-                        childTable.ParentTableName = parentTable.TableName;
-                        childTable.ParentXmlFieldName = name;
-
-                        ProcessComplexTypeChildren(complexType, resolvedChild, childTable, false, visitedTypes);
-
-                        _messageStructure.Slots.Add(new MessageSlot
+                        if (IsWrapperElement(complexType))
                         {
-                            XmlElementName = name,
-                            TableName = tableName,
-                            IsRepeating = false
-                        });
+                            // Wrapper: don't create table. Process inner children as root-level slots.
+                            var wrapperSlot = new MessageSlot
+                            {
+                                XmlElementName = name,
+                                IsWrapper = true,
+                                WrapperChildren = new List<MessageSlot>()
+                            };
+
+                            var slotsBefore = _messageStructure.Slots.Count;
+                            ProcessComplexTypeChildren(complexType, resolvedChild, parentTable,
+                                createTablesForSingletons: true, visitedTypes);
+
+                            // Move newly added slots into the wrapper
+                            for (int s = slotsBefore; s < _messageStructure.Slots.Count; s++)
+                                wrapperSlot.WrapperChildren.Add(_messageStructure.Slots[s]);
+                            _messageStructure.Slots.RemoveRange(slotsBefore,
+                                _messageStructure.Slots.Count - slotsBefore);
+                            _messageStructure.Slots.Add(wrapperSlot);
+                        }
+                        else
+                        {
+                            // Create 1:1 child table for singleton segment
+                            var childTable = CreateChildTable(tableName, parentTable.TableName, isRepeating: false);
+                            childTable.XmlElementName = name;
+                            childTable.ParentTableName = parentTable.TableName;
+                            childTable.ParentXmlFieldName = name;
+
+                            ProcessComplexTypeChildren(complexType, resolvedChild, childTable, false, visitedTypes);
+
+                            _messageStructure.Slots.Add(new MessageSlot
+                            {
+                                XmlElementName = name,
+                                TableName = tableName,
+                                IsRepeating = false
+                            });
+                        }
                     }
                     else
                     {
@@ -490,28 +558,55 @@ public class XsdParser
 
         if (isRepeating)
         {
-            // Repeating element inside a flattened scope — must create a child table
-            var childTable = CreateChildTable(elName, table.TableName, isRepeating: true);
-            childTable.XmlElementName = elName;
-            childTable.ParentTableName = table.TableName;
-            childTable.ParentXmlFieldName = elName;
-            childTable.XmlContainerPath = new List<string>(currentContainerPath);
-
-            if (elComplexType != null)
+            // Check if this is a reused complex type → shared table
+            var elTypeName = elComplexType?.Attribute("name")?.Value ?? elName;
+            if (elComplexType != null && IsReusedType(elTypeName))
             {
-                ProcessComplexTypeChildren(elComplexType, resolvedEl, childTable, false, visitedTypes);
+                TableDefinition sharedTable;
+                if (_sharedTables.TryGetValue(elTypeName, out var existing))
+                {
+                    sharedTable = existing;
+                }
+                else
+                {
+                    sharedTable = CreateSharedChildTable(elName);
+                    sharedTable.XmlElementName = elName;
+                    ProcessComplexTypeChildren(elComplexType, resolvedEl, sharedTable, false, visitedTypes);
+                    _sharedTables[elTypeName] = sharedTable;
+                }
+
+                sharedTable.SharedParentMappings.Add(new SharedParentMapping
+                {
+                    ParentTableName = table.TableName,
+                    ParentXmlFieldName = elName,
+                    XmlContainerPath = new List<string>(currentContainerPath)
+                });
             }
             else
             {
-                var elTypeAttr = resolvedEl.Attribute("type")?.Value;
-                var sqlType = elTypeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(elTypeAttr)) : "NVARCHAR(MAX)";
-                childTable.Columns.Add(new ColumnDefinition
+                // Repeating element inside a flattened scope — must create a child table
+                var childTable = CreateChildTable(elName, table.TableName, isRepeating: true);
+                childTable.XmlElementName = elName;
+                childTable.ParentTableName = table.TableName;
+                childTable.ParentXmlFieldName = elName;
+                childTable.XmlContainerPath = new List<string>(currentContainerPath);
+
+                if (elComplexType != null)
                 {
-                    ColumnName = "Value",
-                    SqlType = sqlType,
-                    IsNullable = true,
-                    XmlPath = childXmlPath
-                });
+                    ProcessComplexTypeChildren(elComplexType, resolvedEl, childTable, false, visitedTypes);
+                }
+                else
+                {
+                    var elTypeAttr = resolvedEl.Attribute("type")?.Value;
+                    var sqlType = elTypeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(elTypeAttr)) : "NVARCHAR(MAX)";
+                    childTable.Columns.Add(new ColumnDefinition
+                    {
+                        ColumnName = "Value",
+                        SqlType = sqlType,
+                        IsNullable = true,
+                        XmlPath = childXmlPath
+                    });
+                }
             }
         }
         else if (elComplexType != null)
@@ -610,6 +705,82 @@ public class XsdParser
         }
 
         return groupSlot;
+    }
+
+    /// <summary>
+    /// Walks all XSD docs counting how many times each named complex type is referenced
+    /// via ref="..." or type="..." on xs:element nodes.
+    /// </summary>
+    private void CountReferences()
+    {
+        foreach (var (_, doc) in _docs)
+        {
+            foreach (var el in doc.Descendants(Xs + "element"))
+            {
+                // Count ref="..." usages
+                var refAttr = el.Attribute("ref")?.Value;
+                if (refAttr != null)
+                {
+                    var localName = StripPrefix(refAttr);
+                    // Check if the referenced element resolves to a complex type
+                    var resolved = ResolveRefElement(el);
+                    if (resolved != null && GetComplexType(resolved) != null)
+                    {
+                        _refCounts.TryGetValue(localName, out int c);
+                        _refCounts[localName] = c + 1;
+                    }
+                }
+
+                // Count type="..." usages that resolve to named complex types
+                var typeAttr = el.Attribute("type")?.Value;
+                if (typeAttr != null)
+                {
+                    var localName = StripPrefix(typeAttr);
+                    var resolved = ResolveTypeRef(typeAttr, el);
+                    if (resolved != null && IsComplexType(resolved))
+                    {
+                        _refCounts.TryGetValue(localName, out int c);
+                        _refCounts[localName] = c + 1;
+                    }
+                }
+            }
+        }
+    }
+
+    private bool IsReusedType(string name)
+    {
+        return _refCounts.TryGetValue(name, out int count) && count >= 2;
+    }
+
+    /// <summary>
+    /// Creates a shared child table with ParentKey/ParentType instead of a hard FK.
+    /// </summary>
+    private TableDefinition CreateSharedChildTable(string tableName)
+    {
+        var table = CreateTable(tableName);
+
+        table.IsSharedTable = true;
+
+        table.Columns.Add(new ColumnDefinition
+        {
+            ColumnName = "ParentKey",
+            SqlType = "BIGINT",
+            IsNullable = false
+        });
+        table.Columns.Add(new ColumnDefinition
+        {
+            ColumnName = "ParentType",
+            SqlType = "NVARCHAR(128)",
+            IsNullable = false
+        });
+        table.Columns.Add(new ColumnDefinition
+        {
+            ColumnName = "RepeatIndex",
+            SqlType = "INT",
+            IsNullable = false
+        });
+
+        return table;
     }
 
     private void HandleColumnOverflow()
@@ -1003,6 +1174,32 @@ public class XsdParser
     {
         var maxOccurs = element.Attribute("maxOccurs")?.Value;
         return maxOccurs == "unbounded" || (int.TryParse(maxOccurs, out var m) && m > 1);
+    }
+
+    /// <summary>
+    /// A singleton complex element is a "wrapper" if its complex type has no attributes/attributeGroups
+    /// and all its child elements are repeating. Such a wrapper table would have zero data columns.
+    /// </summary>
+    private bool IsWrapperElement(XElement complexType)
+    {
+        var (seq, choice, attrSources) = GetEffectiveContent(complexType);
+
+        // Has attributes? Not a wrapper
+        foreach (var source in attrSources)
+        {
+            if (source.Elements(Xs + "attribute").Any()
+                || source.Elements(Xs + "attributeGroup").Any())
+                return false;
+        }
+
+        var elementSource = seq ?? choice;
+        if (elementSource == null) return false;
+
+        var elements = elementSource.Elements(Xs + "element").ToList();
+        if (elements.Count == 0) return false;
+
+        // All children must be repeating
+        return elements.All(e => IsRepeating(e));
     }
 
     private TableDefinition CreateTable(string tableName)

@@ -27,6 +27,21 @@ public class XmlProcessor
             .Where(t => t.ParentTableName != null)
             .GroupBy(t => t.ParentTableName!)
             .ToDictionary(g => g.Key, g => g.ToList());
+
+        // Register shared tables under each of their parent table names
+        foreach (var table in tables.Where(t => t.IsSharedTable))
+        {
+            foreach (var mapping in table.SharedParentMappings)
+            {
+                if (!_childFieldTables.TryGetValue(mapping.ParentTableName, out var list))
+                {
+                    list = new List<TableDefinition>();
+                    _childFieldTables[mapping.ParentTableName] = list;
+                }
+                if (!list.Contains(table))
+                    list.Add(table);
+            }
+        }
     }
 
     public RowData ProcessFile(XDocument xml)
@@ -65,7 +80,11 @@ public class XmlProcessor
                    && !slotNames.Contains(xmlChildren[idx].Name.LocalName))
                 idx++;
 
-            if (slot.IsGroup)
+            if (slot.IsWrapper)
+            {
+                ConsumeWrapperSlot(xmlChildren, ref idx, slot, messageRow);
+            }
+            else if (slot.IsGroup)
             {
                 ConsumeGroupInstances(xmlChildren, ref idx, slot, messageRow);
             }
@@ -80,6 +99,41 @@ public class XmlProcessor
         }
 
         return messageRow;
+    }
+
+    private void ConsumeWrapperSlot(List<XElement> xmlChildren, ref int idx,
+        MessageSlot slot, RowData parentRow)
+    {
+        if (idx >= xmlChildren.Count
+            || xmlChildren[idx].Name.LocalName != slot.XmlElementName)
+            return;
+
+        var wrapperEl = xmlChildren[idx];
+        idx++;
+
+        if (slot.WrapperChildren == null) return;
+
+        var innerChildren = wrapperEl.Elements().ToList();
+        int innerIdx = 0;
+
+        var innerSlotNames = new HashSet<string>(
+            slot.WrapperChildren.Select(s => s.XmlElementName));
+
+        foreach (var innerSlot in slot.WrapperChildren)
+        {
+            // Skip unrecognized elements
+            while (innerIdx < innerChildren.Count
+                   && innerChildren[innerIdx].Name.LocalName != innerSlot.XmlElementName
+                   && !innerSlotNames.Contains(innerChildren[innerIdx].Name.LocalName))
+                innerIdx++;
+
+            if (innerSlot.IsGroup)
+                ConsumeGroupInstances(innerChildren, ref innerIdx, innerSlot, parentRow);
+            else if (innerSlot.IsRepeating)
+                ConsumeRepeatingSegments(innerChildren, ref innerIdx, innerSlot, parentRow);
+            else
+                ConsumeOptionalSegment(innerChildren, ref innerIdx, innerSlot, parentRow);
+        }
     }
 
     private void ConsumeOptionalSegment(List<XElement> xmlChildren, ref int idx, MessageSlot slot, RowData parentRow)
@@ -172,14 +226,31 @@ public class XmlProcessor
         {
             foreach (var childTableDef in childTables)
             {
-                var fieldName = childTableDef.ParentXmlFieldName;
+                string? fieldName;
+                List<string> containerPath;
+
+                if (childTableDef.IsSharedTable)
+                {
+                    // For shared tables, look up the mapping for the current parent context
+                    var mapping = childTableDef.SharedParentMappings
+                        .FirstOrDefault(m => m.ParentTableName == tableName);
+                    if (mapping == null) continue;
+                    fieldName = mapping.ParentXmlFieldName;
+                    containerPath = mapping.XmlContainerPath;
+                }
+                else
+                {
+                    fieldName = childTableDef.ParentXmlFieldName;
+                    containerPath = childTableDef.XmlContainerPath;
+                }
+
                 if (fieldName == null) continue;
 
                 // Navigate through XmlContainerPath to find the right parent element
                 var searchRoot = segElement;
-                if (childTableDef.XmlContainerPath.Count > 0)
+                if (containerPath.Count > 0)
                 {
-                    foreach (var containerName in childTableDef.XmlContainerPath)
+                    foreach (var containerName in containerPath)
                     {
                         searchRoot = searchRoot.Elements()
                             .FirstOrDefault(e => e.Name.LocalName == containerName);
@@ -198,6 +269,13 @@ public class XmlProcessor
                     // Recursively extract the child row (so its own children are also processed)
                     var childRow = ExtractSegmentRow(repeatingElements[i], childTableDef.TableName);
                     childRow.RepeatIndex = i;
+
+                    // For shared tables, set ParentType to the current parent's table name
+                    if (childTableDef.IsSharedTable)
+                    {
+                        childRow.Values["ParentType"] = tableName;
+                    }
+
                     row.ChildRows.Add(childRow);
                 }
             }

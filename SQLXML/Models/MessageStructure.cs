@@ -12,4 +12,6 @@ public class MessageSlot
     public bool IsRepeating { get; set; }
     public bool IsGroup { get; set; }
     public List<MessageSlot>? GroupChildren { get; set; }
+    public bool IsWrapper { get; set; }
+    public List<MessageSlot>? WrapperChildren { get; set; }
 }

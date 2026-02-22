@@ -16,6 +16,16 @@ public class TableDefinition
     /// Empty list means the child is a direct child of the parent element.
     /// </summary>
     public List<string> XmlContainerPath { get; set; } = new();
+
+    /// <summary>
+    /// True if this table is shared across multiple parent types (polymorphic parent via ParentKey/ParentType).
+    /// </summary>
+    public bool IsSharedTable { get; set; }
+
+    /// <summary>
+    /// Mappings describing each parent that references this shared table.
+    /// </summary>
+    public List<SharedParentMapping> SharedParentMappings { get; set; } = new();
 }
 
 public class ColumnDefinition
@@ -26,6 +36,13 @@ public class ColumnDefinition
     public bool IsIdentity { get; set; }
     public bool IsPrimaryKey { get; set; }
     public List<string> XmlPath { get; set; } = new();
+}
+
+public class SharedParentMapping
+{
+    public string ParentTableName { get; set; } = string.Empty;
+    public string ParentXmlFieldName { get; set; } = string.Empty;
+    public List<string> XmlContainerPath { get; set; } = new();
 }
 
 public class ForeignKeyDefinition

@@ -71,6 +71,15 @@ public class SqlServerLoader : IDisposable
             }
         }
 
+        // For shared tables, resolve ParentKey from the ParentType discriminator
+        if (tableDef.IsSharedTable
+            && parameters.TryGetValue("ParentType", out var ptObj)
+            && ptObj is string pt
+            && fkValues.TryGetValue(pt, out var parentId))
+        {
+            parameters["ParentKey"] = parentId;
+        }
+
         // Add RepeatIndex if applicable
         if (segRow.RepeatIndex.HasValue &&
             tableDef.Columns.Any(c => c.ColumnName == "RepeatIndex"))
@@ -97,6 +106,15 @@ public class SqlServerLoader : IDisposable
                     {
                         childParams[fk.ColumnName] = fkId;
                     }
+                }
+
+                // For shared tables, resolve ParentKey from the ParentType discriminator
+                if (childTableDef.IsSharedTable
+                    && childParams.TryGetValue("ParentType", out var childPtObj)
+                    && childPtObj is string childPt
+                    && fkValues.TryGetValue(childPt, out var childParentId))
+                {
+                    childParams["ParentKey"] = childParentId;
                 }
 
                 if (childRow.RepeatIndex.HasValue &&

@@ -48,6 +48,15 @@ public static class SqlGenerator
             sb.AppendLine(string.Join(",\n", lines));
             sb.AppendLine(");");
             sb.AppendLine("GO");
+
+            // Add index for shared tables on (ParentType, ParentKey)
+            if (table.IsSharedTable)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"CREATE NONCLUSTERED INDEX [IX_{table.TableName}_Parent] ON [{table.TableName}] ([ParentType], [ParentKey]);");
+                sb.AppendLine("GO");
+            }
+
             sb.AppendLine();
         }
 

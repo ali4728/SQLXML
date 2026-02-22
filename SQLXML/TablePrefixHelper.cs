@@ -31,6 +31,13 @@ public static class TablePrefixHelper
                 fk.ConstraintName = $"FK_{nameMap[table.TableName]}_{fk.ReferencedTable}";
             }
 
+            // Update SharedParentMappings so ParentType discriminator values stay consistent
+            foreach (var mapping in table.SharedParentMappings)
+            {
+                if (nameMap.ContainsKey(mapping.ParentTableName))
+                    mapping.ParentTableName = nameMap[mapping.ParentTableName];
+            }
+
             table.TableName = nameMap[table.TableName];
         }
 
@@ -50,6 +57,9 @@ public static class TablePrefixHelper
 
             if (slot.GroupChildren != null)
                 ApplyPrefixToSlots(slot.GroupChildren, nameMap);
+
+            if (slot.WrapperChildren != null)
+                ApplyPrefixToSlots(slot.WrapperChildren, nameMap);
         }
     }
 }
