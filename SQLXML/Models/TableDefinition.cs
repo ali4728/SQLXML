@@ -11,13 +11,6 @@ public class TableDefinition
     public string? ParentXmlFieldName { get; set; }
 
     /// <summary>
-    /// Path from the parent segment element down to the container of repeating child elements.
-    /// E.g. for Encounter under Transaction/Encounters/Encounter, this would be ["Encounters"].
-    /// Empty list means the child is a direct child of the parent element.
-    /// </summary>
-    public List<string> XmlContainerPath { get; set; } = new();
-
-    /// <summary>
     /// True if this table is shared across multiple parent types (polymorphic parent via ParentKey/ParentType).
     /// </summary>
     public bool IsSharedTable { get; set; }
@@ -42,7 +35,6 @@ public class SharedParentMapping
 {
     public string ParentTableName { get; set; } = string.Empty;
     public string ParentXmlFieldName { get; set; } = string.Empty;
-    public List<string> XmlContainerPath { get; set; } = new();
 }
 
 public class ForeignKeyDefinition

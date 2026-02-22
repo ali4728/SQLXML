@@ -234,60 +234,38 @@ public class XmlProcessor
             }
         }
 
-        // Extract child field table rows (repeating fields within this segment)
+        // Extract child field table rows
         if (_childFieldTables.TryGetValue(tableName, out var childTables))
         {
             foreach (var childTableDef in childTables)
             {
                 string? fieldName;
-                List<string> containerPath;
 
                 if (childTableDef.IsSharedTable)
                 {
-                    // For shared tables, look up the mapping for the current parent context
                     var mapping = childTableDef.SharedParentMappings
                         .FirstOrDefault(m => m.ParentTableName == tableName);
                     if (mapping == null) continue;
                     fieldName = mapping.ParentXmlFieldName;
-                    containerPath = mapping.XmlContainerPath;
                 }
                 else
                 {
                     fieldName = childTableDef.ParentXmlFieldName;
-                    containerPath = childTableDef.XmlContainerPath;
                 }
 
                 if (fieldName == null) continue;
 
-                // Navigate through XmlContainerPath to find the right parent element
-                var searchRoot = segElement;
-                if (containerPath.Count > 0)
-                {
-                    foreach (var containerName in containerPath)
-                    {
-                        searchRoot = searchRoot.Elements()
-                            .FirstOrDefault(e => e.Name.LocalName == containerName);
-                        if (searchRoot == null) break;
-                    }
-                    if (searchRoot == null) continue;
-                }
-
-                // Find all repeating elements matching this field name
-                var repeatingElements = searchRoot.Elements()
+                var matchingElements = segElement.Elements()
                     .Where(e => e.Name.LocalName == fieldName)
                     .ToList();
 
-                for (int i = 0; i < repeatingElements.Count; i++)
+                for (int i = 0; i < matchingElements.Count; i++)
                 {
-                    // Recursively extract the child row (so its own children are also processed)
-                    var childRow = ExtractSegmentRow(repeatingElements[i], childTableDef.TableName);
+                    var childRow = ExtractSegmentRow(matchingElements[i], childTableDef.TableName);
                     childRow.RepeatIndex = i;
 
-                    // For shared tables, set ParentType to the current parent's table name
                     if (childTableDef.IsSharedTable)
-                    {
                         childRow.Values["ParentType"] = tableName;
-                    }
 
                     row.ChildRows.Add(childRow);
                 }
