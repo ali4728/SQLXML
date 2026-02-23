@@ -11,6 +11,12 @@ public class TableDefinition
     public string? ParentXmlFieldName { get; set; }
 
     /// <summary>
+    /// When set, indicates that this table's XML elements are nested inside a wrapper element
+    /// that was eliminated from the schema. XML navigation must first enter this wrapper element.
+    /// </summary>
+    public string? WrapperXmlElementName { get; set; }
+
+    /// <summary>
     /// True if this table is shared across multiple parent types (polymorphic parent via ParentKey/ParentType).
     /// </summary>
     public bool IsSharedTable { get; set; }
@@ -35,6 +41,7 @@ public class SharedParentMapping
 {
     public string ParentTableName { get; set; } = string.Empty;
     public string ParentXmlFieldName { get; set; } = string.Empty;
+    public string? WrapperXmlElementName { get; set; }
 }
 
 public class ForeignKeyDefinition

@@ -407,6 +407,70 @@ public class XsdParser
                             });
                         }
                     }
+                    else if (IsWrapperElement(complexType))
+                    {
+                        // Wrapper element: skip table creation, process children as children of current parent.
+                        // Children need to know the wrapper XML element name for XML navigation.
+                        var wrapperName = name;
+                        var innerElements = GetWrapperInnerElements(complexType);
+                        foreach (var innerElem in innerElements)
+                        {
+                            var (innerResolved, innerName) = ResolveElement(innerElem);
+                            var innerComplexType = GetComplexType(innerResolved);
+                            var innerTypeName = innerComplexType?.Attribute("name")?.Value ?? innerName;
+                            var innerTableName = innerName;
+
+                            if (innerComplexType != null && IsReusedType(innerTypeName))
+                            {
+                                // Shared table path for wrapper child
+                                TableDefinition sharedTable;
+                                if (_sharedTables.TryGetValue(innerTypeName, out var existing))
+                                {
+                                    sharedTable = existing;
+                                }
+                                else
+                                {
+                                    sharedTable = CreateSharedChildTable(innerName);
+                                    sharedTable.XmlElementName = innerName;
+                                    ProcessComplexTypeChildren(innerComplexType, innerResolved, sharedTable, false, visitedTypes);
+                                    _sharedTables[innerTypeName] = sharedTable;
+                                }
+
+                                sharedTable.SharedParentMappings.Add(new SharedParentMapping
+                                {
+                                    ParentTableName = parentTable.TableName,
+                                    ParentXmlFieldName = innerName,
+                                    WrapperXmlElementName = wrapperName
+                                });
+                            }
+                            else
+                            {
+                                // Non-shared repeating child inside wrapper
+                                var childTable = CreateChildTable(innerTableName, parentTable.TableName, isRepeating: IsRepeating(innerElem));
+                                childTable.XmlElementName = innerName;
+                                childTable.ParentTableName = parentTable.TableName;
+                                childTable.ParentXmlFieldName = innerName;
+                                childTable.WrapperXmlElementName = wrapperName;
+
+                                if (innerComplexType != null)
+                                {
+                                    ProcessComplexTypeChildren(innerComplexType, innerResolved, childTable, false, visitedTypes);
+                                }
+                                else
+                                {
+                                    var typeAttr = innerResolved.Attribute("type")?.Value;
+                                    var sqlType = typeAttr != null ? SqlGenerator.GetSqlType(StripPrefix(typeAttr)) : "NVARCHAR(MAX)";
+                                    childTable.Columns.Add(new ColumnDefinition
+                                    {
+                                        ColumnName = "Value",
+                                        SqlType = sqlType,
+                                        IsNullable = true,
+                                        XmlPath = new List<string> { innerName }
+                                    });
+                                }
+                            }
+                        }
+                    }
                     else
                     {
                         // Create 1:1 child table for singleton complex type
@@ -912,6 +976,16 @@ public class XsdParser
 
         // All children must be repeating
         return elements.All(e => IsRepeating(e));
+    }
+
+    /// <summary>
+    /// Returns the inner child elements of a wrapper complex type.
+    /// </summary>
+    private List<XElement> GetWrapperInnerElements(XElement complexType)
+    {
+        var (seq, choice, _) = GetEffectiveContent(complexType);
+        var elementSource = seq ?? choice;
+        return elementSource?.Elements(Xs + "element").ToList() ?? new List<XElement>();
     }
 
     private TableDefinition CreateTable(string tableName)

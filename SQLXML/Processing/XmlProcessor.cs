@@ -245,21 +245,34 @@ public class XmlProcessor
             {
                 string? fieldName;
 
+                string? wrapperName = null;
+
                 if (childTableDef.IsSharedTable)
                 {
                     var mapping = childTableDef.SharedParentMappings
                         .FirstOrDefault(m => m.ParentTableName == tableName);
                     if (mapping == null) continue;
                     fieldName = mapping.ParentXmlFieldName;
+                    wrapperName = mapping.WrapperXmlElementName;
                 }
                 else
                 {
                     fieldName = childTableDef.ParentXmlFieldName;
+                    wrapperName = childTableDef.WrapperXmlElementName;
                 }
 
                 if (fieldName == null) continue;
 
-                var matchingElements = segElement.Elements()
+                XElement searchRoot = segElement;
+                if (wrapperName != null)
+                {
+                    var wrapperEl = segElement.Elements()
+                        .FirstOrDefault(e => e.Name.LocalName == wrapperName);
+                    if (wrapperEl == null) continue;
+                    searchRoot = wrapperEl;
+                }
+
+                var matchingElements = searchRoot.Elements()
                     .Where(e => e.Name.LocalName == fieldName)
                     .ToList();
 
