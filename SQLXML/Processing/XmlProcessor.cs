@@ -145,6 +145,8 @@ public class XmlProcessor
 
         var row = ExtractSegmentRow(el, slot.TableName);
         SetSharedTableParentType(row, parentRow);
+        if (_tablesByName.TryGetValue(row.TableName, out var tableDef2) && tableDef2.IsSharedTable)
+            row.RepeatIndex = 0;
         parentRow.ChildRows.Add(row);
         idx++;
     }
@@ -198,6 +200,8 @@ public class XmlProcessor
                         {
                             var childRow = ExtractSegmentRow(xmlChildren[idx], childSlot.TableName);
                             SetSharedTableParentType(childRow, leadRow);
+                            if (_tablesByName.TryGetValue(childRow.TableName, out var childTableDef2) && childTableDef2.IsSharedTable)
+                                childRow.RepeatIndex = 0;
                             leadRow.ChildRows.Add(childRow);
                             idx++;
                         }
