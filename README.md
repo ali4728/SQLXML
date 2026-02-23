@@ -8,7 +8,6 @@ A .NET 8 console application that converts **XSD schemas into SQL Server tables*
 - **Schema Registration** — Store XSD files (with all imports/includes) in a metadata database for versioned, repeatable use.
 - **Schema Generation** — Generate SQL Server `CREATE TABLE` DDL scripts with primary keys, foreign keys, and proper column types from a registered XSD.
 - **XML Data Loading** — Process XML from a folder of files or from rows in a SQL source table, and insert data into SQL Server respecting parent-child relationships and insert ordering.
-- **Smart Flattening** — Singleton complex types are flattened into wide tables to minimize table count; repeating elements get their own child tables with `RepeatIndex` for ordering.
 - **Column Overflow Handling** — Tables exceeding 300 columns are automatically split into `_Ext` extension tables.
 - **Identifier Shortening** — Column and table names exceeding SQL Server's 128-character limit are automatically abbreviated using domain-aware rules.
 - **Per-Document Transactions** — Each XML document (file or source row) is processed in its own transaction; failures are isolated and do not affect prior successful inserts.
@@ -214,8 +213,8 @@ The `register` command loads the root XSD and all referenced files (`xs:import` 
 
 1. The XSD is loaded from the metadata database and all type references are resolved into a complete type dictionary.
 2. Each direct child of the document root with a complex type becomes its own SQL table with an identity PK and a foreign key to the root table.
-3. Sub-element singleton complex types are **flattened** into their parent table as columns (up to a configurable depth).
-4. Repeating elements (`maxOccurs > 1` or `unbounded`) get their own child tables with a `RepeatIndex` column.
+3. Sub-element complex types become their own child tables with an identity PK and a foreign key to the parent table.
+4. Repeating elements (`maxOccurs > 1` or `unbounded`) additionally get a `RepeatIndex` column to preserve ordering.
 5. Column names are derived from the XML path, joined by underscores.
 
 ### XML Processing
