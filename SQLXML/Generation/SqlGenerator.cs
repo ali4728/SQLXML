@@ -53,7 +53,7 @@ public static class SqlGenerator
             if (table.IsSharedTable)
             {
                 sb.AppendLine();
-                sb.AppendLine($"CREATE NONCLUSTERED INDEX [IX_{table.TableName}_Parent] ON [{table.TableName}] ([ParentType], [ParentKey]);");
+                sb.AppendLine($"CREATE NONCLUSTERED INDEX [IX_{table.TableName}_Parent] ON [{table.TableName}] ([ParentType], [ParentKey], [SourceField]);");
                 sb.AppendLine("GO");
             }
 

@@ -144,7 +144,7 @@ public class XmlProcessor
         if (el.Name.LocalName != slot.XmlElementName) return;
 
         var row = ExtractSegmentRow(el, slot.TableName);
-        SetSharedTableParentType(row, parentRow);
+        SetSharedTableParentType(row, parentRow, slot.XmlElementName);
         if (_tablesByName.TryGetValue(row.TableName, out var tableDef2) && tableDef2.IsSharedTable)
             row.RepeatIndex = 0;
         parentRow.ChildRows.Add(row);
@@ -158,7 +158,7 @@ public class XmlProcessor
         {
             var row = ExtractSegmentRow(xmlChildren[idx], slot.TableName);
             row.RepeatIndex = repeatIndex++;
-            SetSharedTableParentType(row, parentRow);
+            SetSharedTableParentType(row, parentRow, slot.XmlElementName);
             parentRow.ChildRows.Add(row);
             idx++;
         }
@@ -173,7 +173,7 @@ public class XmlProcessor
             // Extract lead segment
             var leadRow = ExtractSegmentRow(xmlChildren[idx], groupSlot.TableName);
             leadRow.RepeatIndex = repeatIndex++;
-            SetSharedTableParentType(leadRow, messageRow);
+            SetSharedTableParentType(leadRow, messageRow, groupSlot.XmlElementName);
             messageRow.ChildRows.Add(leadRow);
             idx++;
 
@@ -189,7 +189,7 @@ public class XmlProcessor
                         {
                             var childRow = ExtractSegmentRow(xmlChildren[idx], childSlot.TableName);
                             childRow.RepeatIndex = childRepeatIndex++;
-                            SetSharedTableParentType(childRow, leadRow);
+                            SetSharedTableParentType(childRow, leadRow, childSlot.XmlElementName);
                             leadRow.ChildRows.Add(childRow);
                             idx++;
                         }
@@ -199,7 +199,7 @@ public class XmlProcessor
                         if (idx < xmlChildren.Count && xmlChildren[idx].Name.LocalName == childSlot.XmlElementName)
                         {
                             var childRow = ExtractSegmentRow(xmlChildren[idx], childSlot.TableName);
-                            SetSharedTableParentType(childRow, leadRow);
+                            SetSharedTableParentType(childRow, leadRow, childSlot.XmlElementName);
                             if (_tablesByName.TryGetValue(childRow.TableName, out var childTableDef2) && childTableDef2.IsSharedTable)
                                 childRow.RepeatIndex = 0;
                             leadRow.ChildRows.Add(childRow);
@@ -211,11 +211,12 @@ public class XmlProcessor
         }
     }
 
-    private void SetSharedTableParentType(RowData row, RowData parentRow)
+    private void SetSharedTableParentType(RowData row, RowData parentRow, string sourceField)
     {
         if (_tablesByName.TryGetValue(row.TableName, out var tableDef) && tableDef.IsSharedTable)
         {
             row.Values["ParentType"] = parentRow.TableName;
+            row.Values["SourceField"] = sourceField;
         }
     }
 
@@ -274,6 +275,7 @@ public class XmlProcessor
                             var childRow = ExtractSegmentRow(matchingElements[i], childTableDef.TableName);
                             childRow.RepeatIndex = i;
                             childRow.Values["ParentType"] = tableName;
+                            childRow.Values["SourceField"] = fieldName;
                             row.ChildRows.Add(childRow);
                         }
                     }

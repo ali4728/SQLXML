@@ -650,6 +650,12 @@ public class XsdParser
             SqlType = "INT",
             IsNullable = false
         });
+        table.Columns.Add(new ColumnDefinition
+        {
+            ColumnName = "SourceField",
+            SqlType = "NVARCHAR(128)",
+            IsNullable = false
+        });
 
         return table;
     }
