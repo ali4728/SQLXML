@@ -243,48 +243,66 @@ public class XmlProcessor
         {
             foreach (var childTableDef in childTables)
             {
-                string? fieldName;
-
-                string? wrapperName = null;
-
                 if (childTableDef.IsSharedTable)
                 {
-                    var mapping = childTableDef.SharedParentMappings
-                        .FirstOrDefault(m => m.ParentTableName == tableName);
-                    if (mapping == null) continue;
-                    fieldName = mapping.ParentXmlFieldName;
-                    wrapperName = mapping.WrapperXmlElementName;
+                    // Process ALL mappings from this parent, not just the first
+                    var matchingMappings = childTableDef.SharedParentMappings
+                        .Where(m => m.ParentTableName == tableName)
+                        .ToList();
+
+                    foreach (var mapping in matchingMappings)
+                    {
+                        var fieldName = mapping.ParentXmlFieldName;
+                        var wrapperName = mapping.WrapperXmlElementName;
+                        if (fieldName == null) continue;
+
+                        XElement searchRoot = segElement;
+                        if (wrapperName != null)
+                        {
+                            var wrapperEl = segElement.Elements()
+                                .FirstOrDefault(e => e.Name.LocalName == wrapperName);
+                            if (wrapperEl == null) continue;
+                            searchRoot = wrapperEl;
+                        }
+
+                        var matchingElements = searchRoot.Elements()
+                            .Where(e => e.Name.LocalName == fieldName)
+                            .ToList();
+
+                        for (int i = 0; i < matchingElements.Count; i++)
+                        {
+                            var childRow = ExtractSegmentRow(matchingElements[i], childTableDef.TableName);
+                            childRow.RepeatIndex = i;
+                            childRow.Values["ParentType"] = tableName;
+                            row.ChildRows.Add(childRow);
+                        }
+                    }
                 }
                 else
                 {
-                    fieldName = childTableDef.ParentXmlFieldName;
-                    wrapperName = childTableDef.WrapperXmlElementName;
-                }
+                    var fieldName = childTableDef.ParentXmlFieldName;
+                    var wrapperName = childTableDef.WrapperXmlElementName;
+                    if (fieldName == null) continue;
 
-                if (fieldName == null) continue;
+                    XElement searchRoot = segElement;
+                    if (wrapperName != null)
+                    {
+                        var wrapperEl = segElement.Elements()
+                            .FirstOrDefault(e => e.Name.LocalName == wrapperName);
+                        if (wrapperEl == null) continue;
+                        searchRoot = wrapperEl;
+                    }
 
-                XElement searchRoot = segElement;
-                if (wrapperName != null)
-                {
-                    var wrapperEl = segElement.Elements()
-                        .FirstOrDefault(e => e.Name.LocalName == wrapperName);
-                    if (wrapperEl == null) continue;
-                    searchRoot = wrapperEl;
-                }
+                    var matchingElements = searchRoot.Elements()
+                        .Where(e => e.Name.LocalName == fieldName)
+                        .ToList();
 
-                var matchingElements = searchRoot.Elements()
-                    .Where(e => e.Name.LocalName == fieldName)
-                    .ToList();
-
-                for (int i = 0; i < matchingElements.Count; i++)
-                {
-                    var childRow = ExtractSegmentRow(matchingElements[i], childTableDef.TableName);
-                    childRow.RepeatIndex = i;
-
-                    if (childTableDef.IsSharedTable)
-                        childRow.Values["ParentType"] = tableName;
-
-                    row.ChildRows.Add(childRow);
+                    for (int i = 0; i < matchingElements.Count; i++)
+                    {
+                        var childRow = ExtractSegmentRow(matchingElements[i], childTableDef.TableName);
+                        childRow.RepeatIndex = i;
+                        row.ChildRows.Add(childRow);
+                    }
                 }
             }
         }
