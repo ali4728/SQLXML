@@ -6,6 +6,7 @@ using SQLXML.MetaData;
 using SQLXML.Models;
 using SQLXML.Parsing;
 using SQLXML;
+using SQLXML.Analysis;
 using SQLXML.Inference;
 using SQLXML.Processing;
 
@@ -577,6 +578,81 @@ if (command == "infer-xsd")
     return 0;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// ANALYZE-XML — frequency analysis of XML element/attribute XPaths
+// ═══════════════════════════════════════════════════════════════════
+if (command == "analyze-xml")
+{
+    string? inputFolder = null;
+    string? outputPath = null;
+
+    for (int i = 1; i < args.Length; i++)
+    {
+        switch (args[i])
+        {
+            case "--input" when i + 1 < args.Length:
+                inputFolder = args[++i];
+                break;
+            case "--output" when i + 1 < args.Length:
+                outputPath = args[++i];
+                break;
+        }
+    }
+
+    if (inputFolder == null || outputPath == null)
+    {
+        Console.Error.WriteLine("Error: --input and --output are required.");
+        PrintUsage();
+        return 1;
+    }
+
+    if (!Directory.Exists(inputFolder))
+    {
+        Console.Error.WriteLine($"Error: Input folder not found: {inputFolder}");
+        return 1;
+    }
+
+    var xmlFiles = Directory.GetFiles(inputFolder, "*.xml");
+    if (xmlFiles.Length == 0)
+    {
+        Console.Error.WriteLine("Error: No XML files found in input folder.");
+        return 1;
+    }
+
+    var analyzer = new XmlFrequencyAnalyzer();
+    int processed = 0;
+    int skipped = 0;
+
+    foreach (var xmlFile in xmlFiles)
+    {
+        try
+        {
+            var doc = XDocument.Load(xmlFile);
+            analyzer.AnalyzeDocument(doc, Path.GetFileName(xmlFile));
+            processed++;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: skipping {Path.GetFileName(xmlFile)}: {ex.Message}");
+            skipped++;
+        }
+    }
+
+    if (processed == 0)
+    {
+        Console.Error.WriteLine("Error: No XML files could be parsed.");
+        return 1;
+    }
+
+    var results = analyzer.GetResults();
+    XmlFrequencyAnalyzer.WriteCsv(results, outputPath);
+
+    Console.WriteLine($"Analysis complete. {processed} file(s) processed, {skipped} skipped.");
+    Console.WriteLine($"  {results.Count} unique XPath(s) found.");
+    Console.WriteLine($"  CSV written to {outputPath}");
+    return 0;
+}
+
 Console.Error.WriteLine($"Unknown command: {command}");
 PrintUsage();
 return 1;
@@ -778,6 +854,8 @@ static void PrintUsage()
     Console.Error.WriteLine("                 --connection-string <conn-str> [--metadata-connection-string <conn-str>]");
     Console.Error.WriteLine();
     Console.Error.WriteLine("  SQLXML infer-xsd --input <xml-folder> --output <xsd-file>");
+    Console.Error.WriteLine();
+    Console.Error.WriteLine("  SQLXML analyze-xml --input <xml-folder> --output <csv-file>");
     Console.Error.WriteLine();
     Console.Error.WriteLine("Options:");
     Console.Error.WriteLine("  --connection-string           Target database for business tables / data loading");

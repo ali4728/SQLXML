@@ -10,6 +10,7 @@ A .NET 8 console application that converts **XSD schemas into SQL Server tables*
 - **XML Data Loading** — Process XML from a folder of files or from rows in a SQL source table, and insert data into SQL Server respecting parent-child relationships and insert ordering.
 - **Column Overflow Handling** — Tables exceeding 300 columns are automatically split into `_Ext` extension tables.
 - **Identifier Shortening** — Column and table names exceeding SQL Server's 128-character limit are automatically abbreviated using domain-aware rules.
+- **XML Frequency Analysis** — Scan a folder of XML files and produce a CSV report of every unique XPath (elements and attributes) with total and per-file occurrence counts.
 - **Per-Document Transactions** — Each XML document (file or source row) is processed in its own transaction; failures are isolated and do not affect prior successful inserts.
 - **Metadata Tracking** — Schema sets, generation runs, and load metrics are recorded in a metadata database for auditing and lineage.
 
@@ -188,6 +189,37 @@ SQLXML process-sql --schema-name OrderSchema --version v1 \
   --connection-string "Server=localhost;Database=MyData;Trusted_Connection=True;TrustServerCertificate=True"
 ```
 
+### 5. Analyze XML Element/Attribute Frequency
+
+Scan a folder of XML files, collect all unique element and attribute XPaths, and output a CSV frequency report. Useful for understanding data shape and coverage before building a schema.
+
+```bash
+SQLXML analyze-xml --input <xml-folder> --output <csv-file>
+```
+
+- `--input` — Folder containing XML files to analyze.
+- `--output` — Path where the CSV report will be written.
+
+**Example:**
+
+```bash
+SQLXML analyze-xml --input SampleFiles/test/t1/xml --output report.csv
+```
+
+**Sample output (`report.csv`):**
+
+```csv
+XPath,Kind,TotalCount,DistinctFileCount
+/Company,Element,2,2
+/Company/@name,Attribute,2,2
+/Company/Department,Element,4,2
+/Company/Department/Employee,Element,6,2
+/Company/Department/Employee/FirstName,Element,6,2
+```
+
+- **TotalCount** — Total number of occurrences across all files (repeating elements are counted each time).
+- **DistinctFileCount** — Number of files that contain at least one occurrence of the XPath.
+
 ### Options
 
 | Option | Commands | Description |
@@ -197,8 +229,8 @@ SQLXML process-sql --schema-name OrderSchema --version v1 \
 | `--version <label>` | `register`, `generateddl`, `process-file`, `process-sql` | Version label for the schema set |
 | `--source-config <json-file>` | `register` | JSON file with source table settings for `process-sql` |
 | `--table-prefix <prefix>` | `generateddl` | Prefix for all generated table names (saved in metadata for use by `process-file`/`process-sql`) |
-| `--input <folder>` | `infer-xsd`, `process-file` | Folder containing XML files to analyze or process |
-| `--output <path>` | `infer-xsd`, `generateddl` | Output path for generated XSD or SQL script |
+| `--input <folder>` | `infer-xsd`, `process-file`, `analyze-xml` | Folder containing XML files to analyze or process |
+| `--output <path>` | `infer-xsd`, `generateddl`, `analyze-xml` | Output path for generated XSD, SQL script, or CSV report |
 | `--connection-string <conn-str>` | `process-file`, `process-sql` | SQL Server connection string for the target database (or set via `DefaultConnection` in appsettings.json) |
 | `--delete-source-files <Y\|N>` | `process-file` | Delete source XML files after successful processing (default: N) |
 | `--metadata-connection-string <conn-str>` | all | SQL Server connection string for the metadata database (or set via `MetadataConnection` in appsettings.json) |
@@ -229,7 +261,9 @@ The `register` command loads the root XSD and all referenced files (`xs:import` 
 
 ```
 SQLXML/
-├── Program.cs                  # CLI entry point (infer-xsd, register, generateddl, process-file, process-sql)
+├── Program.cs                  # CLI entry point (infer-xsd, register, generateddl, process-file, process-sql, analyze-xml)
+├── Analysis/
+│   └── XmlFrequencyAnalyzer.cs # XML XPath frequency analysis and CSV reporting
 ├── Inference/
 │   └── XsdInferrer.cs          # XSD inference from sample XML files
 ├── Parsing/
